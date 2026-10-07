@@ -74,11 +74,10 @@ impl VaultStore {
 
     async fn token(&self) -> Result<String, StoreError> {
         let mut guard = self.token.lock().await;
-        if let Some((t, until)) = guard.as_ref() {
-            if Instant::now() < *until {
+        if let Some((t, until)) = guard.as_ref()
+            && Instant::now() < *until {
                 return Ok(t.clone());
             }
-        }
         let res = self
             .http
             .post(format!("{}/v1/auth/approle/login", self.addr))

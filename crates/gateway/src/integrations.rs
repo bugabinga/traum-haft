@@ -6,6 +6,7 @@
 //! 2. the scope allows this method (OAuth2) or operation (CRM Plus),
 //! 3. the visitor consented to this app using this provider with this scope,
 //! 4. the visitor has connected the account.
+//!
 //! Missing 3 or 4 answers 401 with a `connect_url`; the app shows a button.
 
 use std::collections::HashMap;
@@ -480,19 +481,16 @@ async fn crm_session(
     creds: &Value,
     force: bool,
 ) -> Result<String, &'static str> {
-    if !force {
-        if let Some((s, until)) = state
+    if !force
+        && let Some((s, until)) = state
             .integrations
             .crm_sessions
             .lock()
             .unwrap()
             .get(cache_key)
-        {
-            if Instant::now() < *until {
+            && Instant::now() < *until {
                 return Ok(s.clone());
             }
-        }
-    }
     let user = creds["username"].as_str().ok_or("CRM Plus not connected")?;
     let key = creds["access_key"]
         .as_str()

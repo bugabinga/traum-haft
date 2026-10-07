@@ -133,11 +133,10 @@ impl GitHubApp {
     async fn token(&self, repo: Option<&str>) -> Result<String, GitHubError> {
         let cache_key = repo.unwrap_or("*").to_string();
         let mut tokens = self.tokens.lock().await;
-        if let Some((t, until)) = tokens.get(&cache_key) {
-            if Instant::now() < *until {
+        if let Some((t, until)) = tokens.get(&cache_key)
+            && Instant::now() < *until {
                 return Ok(t.clone());
             }
-        }
         let id = self.installation_id().await?;
         let body = match repo {
             Some(r) => json!({ "repositories": [r] }),

@@ -23,7 +23,7 @@ pub struct IntegrationsConfig {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ConnectionConfig {
-    Oauth2(OAuth2Config),
+    Oauth2(Box<OAuth2Config>),
     Crmplus(CrmPlusConfig),
 }
 
