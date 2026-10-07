@@ -1,5 +1,6 @@
 # Dev defaults for building this repo's crates. Real app builds set these
-# per app (template/module/.cargo/config.toml, platform build).
+# per app (template/module/.cargo/config.toml, platform build); values
+# already present in the environment always win.
 [env]
-TRAUM_HAFT_ISSUER = { value = "https://apps.invalid", force = false }
-TRAUM_HAFT_APP = { value = "dev", force = false }
+TRAUM_HAFT_ISSUER = "https://apps.invalid"
+TRAUM_HAFT_APP = "dev"

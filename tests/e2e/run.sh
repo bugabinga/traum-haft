@@ -47,8 +47,17 @@ openssl ec -in "$work/stdb/keys/id_ecdsa" -pubout -out "$work/stdb/keys/id_ecdsa
 bg spacetimedb "$stdb_bin/spacetimedb-standalone" start --data-dir "$work/stdb/data" --listen-addr 127.0.0.4:3000 \
   --jwt-pub-key-path "$work/stdb/keys/id_ecdsa.pub" --jwt-priv-key-path "$work/stdb/keys/id_ecdsa" --non-interactive
 
+bg upstreams node "$here/upstreams.mjs" 39400 39425
+wait_for http://127.0.0.1:39400/_seen
+openssl genrsa -out "$work/github-app.pem" 2048 2>/dev/null
+
 (cd "$root" && cargo build -q --release -p traum-haft-gateway)
-GATEWAY_APPS_DOMAIN=apps.isp-insoft.de GATEWAY_ISSUER="$issuer" GATEWAY_APPS_DIR="$work/apps" \
+GATEWAY_STORE=memory GATEWAY_PROVIDERS="$here/providers.toml" \
+  GATEWAY_GITHUB_API=http://127.0.0.1:39400/github GATEWAY_GITHUB_ORG=isp-insoft-gmbh GATEWAY_GITHUB_APP_ID=1 \
+  GATEWAY_GITHUB_KEY_FILE="$work/github-app.pem" \
+  GATEWAY_ROUTINE_URL=http://127.0.0.1:39400/routine/fire GATEWAY_ROUTINE_TOKEN=routine-e2e \
+  GATEWAY_SMTP_URL=smtp://127.0.0.1:39425 GATEWAY_MAIL_FROM="traum-haft <traum-haft@isp-insoft.de>" \
+  GATEWAY_APPS_DOMAIN=apps.isp-insoft.de GATEWAY_ISSUER="$issuer" GATEWAY_APPS_DIR="$work/apps" \
   GATEWAY_KEY_FILE="$work/gateway-key.pem" GATEWAY_LISTEN=127.0.0.2:8080 \
   bg gateway "$root/target/release/traum-haft-gateway"
 wait_for http://127.0.0.4:3000/v1/ping
@@ -66,6 +75,9 @@ for app in notes other; do
 done
 (cd "$root/template/web" && npm ci --silent --no-audit --no-fund && npx vite build --logLevel error --outDir "$work/web-dist")
 for app in notes other; do mkdir -p "$work/apps/$app" && cp -r "$work/web-dist" "$work/apps/$app/current"; done
+# What the platform MCP writes at deploy time.
+printf 'name = "notes"\nintegrations = ["jira:read", "crmplus:read"]\n' > "$work/apps/notes/current/app.toml"
+printf '{"owner_email": "bob@isp-insoft.de"}' > "$work/apps/notes/meta.json"
 
 echo "== edge"
 bg caddy "$caddy" run --config "$work/Caddyfile" --adapter caddyfile

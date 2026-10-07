@@ -4,7 +4,11 @@
 //! sets `X-User-Sub`, `X-User-Email` and `X-App` (stripping client copies).
 //! The gateway trusts those headers and nothing else from the client.
 
+pub mod config;
+pub mod feedback;
+pub mod integrations;
 pub mod keys;
+pub mod store;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,6 +47,8 @@ pub struct Config {
 pub struct AppState {
     pub config: Config,
     pub key: SigningKey,
+    pub integrations: integrations::Integrations,
+    pub feedback: feedback::Feedback,
 }
 
 /// Claims of a platform-issued app token.
@@ -66,6 +72,24 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(verify_stdb_token).post(verify_stdb_token),
         )
         .route("/_internal/tls-ask", get(tls_ask))
+        .route(
+            "/_api/{provider}/{*path}",
+            axum::routing::any(integrations::api),
+        )
+        // connect.<apps_domain> (Caddy sends only that host's traffic here)
+        .route("/c/{provider}", get(integrations::consent_page))
+        .route(
+            "/c/{provider}/approve",
+            axum::routing::post(integrations::approve),
+        )
+        .route(
+            "/c/{provider}/key",
+            axum::routing::post(integrations::submit_key),
+        )
+        .route(
+            "/oauth/{connection}/callback",
+            get(integrations::oauth_callback),
+        )
         .with_state(state)
 }
 
@@ -86,13 +110,13 @@ async fn jwks(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
 /// Identity set by Caddy. Missing or empty means the request did not come
 /// through the authenticated edge, so it is refused.
-struct Visitor {
-    sub: String,
-    email: String,
-    app: String,
+pub struct Visitor {
+    pub sub: String,
+    pub email: String,
+    pub app: String,
 }
 
-fn visitor(headers: &HeaderMap) -> Option<Visitor> {
+pub fn visitor(headers: &HeaderMap) -> Option<Visitor> {
     let get = |name: &str| {
         headers
             .get(name)
@@ -108,7 +132,7 @@ fn visitor(headers: &HeaderMap) -> Option<Visitor> {
     })
 }
 
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

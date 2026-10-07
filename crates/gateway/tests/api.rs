@@ -26,8 +26,19 @@ fn harness() -> Harness {
         apps_dir: dir.path().join("apps"),
         token_ttl_secs: 600,
     };
+    let integrations = traum_haft_gateway::integrations::Integrations::new(
+        Default::default(),
+        Arc::new(traum_haft_gateway::store::MemoryStore::default()),
+        reqwest::Client::new(),
+        "https://connect.apps.example.test".into(),
+    );
     Harness {
-        state: Arc::new(AppState { config, key }),
+        state: Arc::new(AppState {
+            config,
+            key,
+            integrations,
+            feedback: Default::default(),
+        }),
         _dir: dir,
     }
 }

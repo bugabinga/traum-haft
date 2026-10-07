@@ -6,20 +6,33 @@ license.workspace = true
 description = "traum-haft gateway: app tokens, OIDC discovery, token-exchange checks, integrations"
 
 [dependencies]
+async-trait = "0.1.92"
 axum = "0.8.9"
 base64 = "0.23.1"
 getrandom = "0.4.3"
+html-escape = "0.2.15"
 jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
+md-5 = "0.11.0"
 p256 = { version = "0.14.0", features = ["pkcs8", "pem"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "query", "rustls", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+traum-haft-common = { version = "0.1.0", path = "../common" }
+url = "2.5.8"
 
 [dev-dependencies]
+base64 = "0.23.1"
 http-body-util = "0.1.5"
+md-5 = "0.11.0"
+sha2 = "0.11.0"
 tempfile = "3.27.0"
+tokio = { version = "1.53.2", features = ["io-util"] }
 tower = { version = "0.5.3", features = ["util"] }
+traum-haft-common = { path = "../common" }
+url = "2.5.8"

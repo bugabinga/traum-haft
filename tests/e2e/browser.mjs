@@ -94,6 +94,92 @@ await check("connect host needs its own login (app cookie not enough)", async ()
   assert(after.includes("__Host-traum-haft-connect"), `cookies: ${after}`);
 });
 
+// ---- integrations: connect once, then the app calls as the visitor
+const api = (page, path) => page.evaluate(async (p) => {
+  const r = await fetch(p);
+  return { status: r.status, body: await r.json().catch(() => null) };
+}, path);
+const seen = async () => (await fetch("http://127.0.0.1:39400/_seen")).json();
+
+await check("jira: unconnected visitor gets a connect URL", async () => {
+  await alice.goto(NOTES);
+  const r = await api(alice, "/_api/jira/rest/api/3/myself");
+  assert(r.status === 401 && r.body.connect_url.startsWith("https://connect.apps.isp-insoft.de/c/jira?app=notes"), JSON.stringify(r));
+  await alice.goto(r.body.connect_url);
+  const text = await alice.textContent("body");
+  assert(text.includes("notes") && text.includes("Jira") && text.includes("lesen"), text.slice(0, 200));
+});
+
+await check("jira: consent + OAuth (PKCE) + back in the app; call as alice", async () => {
+  await alice.click("button:has-text('Erlauben')");
+  await alice.waitForURL(NOTES, { timeout: 15000 });
+  const r = await api(alice, "/_api/jira/rest/api/3/myself");
+  assert(r.status === 200 && r.body.displayName === "Alice (Jira)", JSON.stringify(r));
+  const s = await seen();
+  const last = s.jira.at(-1);
+  assert(last.auth === "Bearer jira-at" && last.path === "/atlassian/ex/jira/cloud-1/rest/api/3/myself", JSON.stringify(last));
+});
+
+await check("jira: bob is not alice (no shared connection)", async () => {
+  await bob.goto(NOTES);
+  const r = await api(bob, "/_api/jira/rest/api/3/myself");
+  assert(r.status === 401, JSON.stringify(r));
+});
+
+await check("jira: app without the provider in app.toml is refused", async () => {
+  const page = await alice.context().newPage();
+  await page.goto("https://other.apps.isp-insoft.de/");
+  const r = await api(page, "/_api/jira/rest/api/3/myself");
+  assert(r.status === 403, JSON.stringify(r));
+  await page.close();
+});
+
+await check("crm: wrong key is refused and nothing is stored", async () => {
+  const r = await api(alice, "/_api/crmplus/query?query=SELECT%20*%20FROM%20Accounts%3B");
+  assert(r.status === 401, JSON.stringify(r));
+  await alice.goto(r.body.connect_url);
+  await alice.click("button:has-text('Erlauben')");
+  await alice.fill("input[name=username]", "alice");
+  await alice.fill("input[name=access_key]", "wrong");
+  await alice.click("button:has-text('Verbinden')");
+  assert((await alice.textContent("body")).includes("refused"), "expected a refusal message");
+  await alice.goto(NOTES);
+  assert((await api(alice, "/_api/crmplus/query?query=x")).status === 401, "still not connected");
+});
+
+await check("crm: right key connects; query works; deleteuser never passes", async () => {
+  const r = await api(alice, "/_api/crmplus/query?query=x");
+  await alice.goto(r.body.connect_url);
+  await alice.click("button:has-text('Erlauben')");
+  await alice.fill("input[name=username]", "alice");
+  await alice.fill("input[name=access_key]", "secret-key");
+  await alice.click("button:has-text('Verbinden')");
+  await alice.waitForURL(NOTES, { timeout: 15000 });
+  const q = await api(alice, "/_api/crmplus/query?query=SELECT%20*%20FROM%20Accounts%3B");
+  assert(q.status === 200 && q.body.result[0].accountname === "ACME GmbH", JSON.stringify(q));
+  const d = await alice.evaluate(async () => (await fetch("/_api/crmplus/deleteuser", { method: "POST" })).status);
+  assert(d === 403, `deleteuser -> ${d}`);
+  assert(!(await seen()).crm.some((c) => c.operation === "deleteuser"), "deleteuser reached CRM");
+});
+
+await check("Problem melden: issue, routine, mail to reporter and builder", async () => {
+  await alice.goto(NOTES);
+  await alice.waitForFunction(() => document.querySelector("#status")?.textContent === "Verbunden", null, { timeout: 20000 });
+  let alertText = "";
+  alice.once("dialog", async (d) => { alertText = d.message(); await d.accept(); });
+  await alice.click("button.th-feedback");
+  await alice.fill(".th-dialog textarea", "Der Speichern-Knopf reagiert nicht");
+  await alice.click(".th-dialog button[value=send]");
+  await alice.waitForTimeout(2500);
+  assert(alertText.startsWith("Danke"), `alert: ${alertText}`);
+  const s = await seen();
+  assert(s.issues.length === 1 && s.issues[0].repo === "app-notes" && s.issues[0].labels.includes("visitor-report"), JSON.stringify(s.issues));
+  assert(s.issues[0].body.includes("alice@isp-insoft.de"), "reporter in issue");
+  assert(s.fires.length === 1 && s.fires[0].auth === "Bearer routine-e2e", JSON.stringify(s.fires));
+  const to = s.mails.map((m) => /^To: (.*)$/m.exec(m)?.[1]);
+  assert(to.includes("alice@isp-insoft.de") && to.includes("bob@isp-insoft.de"), JSON.stringify(to));
+});
+
 await browser.close();
 console.log(`== ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

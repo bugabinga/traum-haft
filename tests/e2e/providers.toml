@@ -1,0 +1,28 @@
+# Providers for the e2e run; production values differ only in URLs and secrets.
+[connections.atlassian]
+kind = "oauth2"
+title = "Atlassian"
+authorize_url = "http://127.0.0.1:39400/atlassian/authorize"
+token_url = "http://127.0.0.1:39400/atlassian/token"
+client_id = "e2e"
+client_secret = "e2e-secret"
+token_auth = "json"
+scopes = ["read:jira-work", "read:jira-user", "offline_access"]
+authorize_params = { audience = "api.atlassian.com", prompt = "consent" }
+resource_lookup = { url = "http://127.0.0.1:39400/atlassian/resources", match_field = "url", match_value = "https://isp.atlassian.net", id_field = "id" }
+
+[providers.jira]
+connection = "atlassian"
+title = "Jira"
+base_url = "http://127.0.0.1:39400/atlassian/ex/jira/{resource_id}"
+scopes.read = { label = "lesen", methods = ["GET"] }
+
+[connections.crm]
+kind = "crmplus"
+title = "CRM Plus"
+base_url = "http://127.0.0.1:39400/crm"
+
+[providers.crmplus]
+connection = "crm"
+title = "CRM Plus"
+scopes.read = { label = "lesen", operations = ["query", "retrieve", "describe", "listtypes"] }
