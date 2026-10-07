@@ -1,0 +1,99 @@
+# Builds one traum-haft app: Rust module -> wasm, TypeScript bindings,
+# Vite frontend. Called from each app repository's build.yml. Runs the
+# agent-written code on GitHub's runners, never on the platform host.
+# The platform MCP downloads the "release" artifact; no secrets here.
+name: build-app
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: App name (also the token audience)
+        type: string
+        required: true
+      issuer:
+        description: Issuer of platform app tokens
+        type: string
+        required: true
+      version:
+        description: Release number
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  SPACETIME_VERSION: "2.11.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: module
+
+      - name: Install SpacetimeDB CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/spacetime"
+          curl -fsSL "https://github.com/clockworklabs/SpacetimeDB/releases/download/v${SPACETIME_VERSION}/spacetime-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/spacetime"
+          echo "$RUNNER_TEMP/spacetime" >> "$GITHUB_PATH"
+
+      - name: Module
+        working-directory: module
+        env:
+          TRAUM_HAFT_APP: ${{ inputs.app }}
+          TRAUM_HAFT_ISSUER: ${{ inputs.issuer }}
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Module tests
+        working-directory: module
+        env:
+          TRAUM_HAFT_APP: ${{ inputs.app }}
+          TRAUM_HAFT_ISSUER: ${{ inputs.issuer }}
+        run: cargo test --quiet
+
+      - name: Bindings
+        run: |
+          wasm=$(ls module/target/wasm32-unknown-unknown/release/*.wasm | head -n 1)
+          spacetimedb-cli generate --lang typescript --out-dir web/src/module_bindings --bin-path "$wasm" -y
+          cp "$wasm" module.wasm
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Frontend
+        working-directory: web
+        env:
+          VITE_APP_VERSION: v${{ inputs.version }}
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm test --if-present
+
+      - name: Collect release
+        run: |
+          mkdir release
+          cp -r web/dist/. release/
+          cp app.toml module.wasm release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release
+          retention-days: 7
+          if-no-files-found: error

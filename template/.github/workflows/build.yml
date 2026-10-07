@@ -1,0 +1,20 @@
+# Managed by the traum-haft platform; changes are refused.
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release number
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: bugabinga/traum-haft/.github/workflows/build-app.yml@main
+    with:
+      app: "{{app}}"
+      issuer: https://apps.isp-insoft.de
+      version: ${{ inputs.version }}
