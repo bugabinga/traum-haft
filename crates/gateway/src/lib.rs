@@ -21,6 +21,10 @@ use serde_json::json;
 
 use crate::keys::SigningKey;
 
+/// Platform hosts under the apps domain. Caddy's wildcard site uses
+/// on-demand TLS, and its policy also covers these, so `tls-ask` approves them.
+pub const PLATFORM_HOSTS: &[&str] = &["connect", "mcp"];
+
 /// Subdomains of the apps domain that can never be app names.
 pub const RESERVED_NAMES: &[&str] = &[
     "connect", "mcp", "www", "api", "admin", "platform", "static",
@@ -183,7 +187,9 @@ async fn tls_ask(State(state): State<Arc<AppState>>, Query(q): Query<TlsAsk>) ->
     let Some(name) = q.domain.strip_suffix(&suffix) else {
         return StatusCode::NOT_FOUND;
     };
-    if is_valid_app_name(name) && state.config.apps_dir.join(name).is_dir() {
+    if PLATFORM_HOSTS.contains(&name)
+        || (is_valid_app_name(name) && state.config.apps_dir.join(name).is_dir())
+    {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND

@@ -1,0 +1,16 @@
+[package]
+name = "app-module"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+spacetimedb = "=2.11.0"
+# Replaced with a pinned git dependency when an app is created.
+traum-haft-module = { path = "../../crates/traum-haft-module" }
+log = "0.4"
+
+# Standalone: an app repo is its own workspace.
+[workspace]

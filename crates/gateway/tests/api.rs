@@ -274,9 +274,18 @@ async fn tls_ask_only_for_deployed_apps() {
         call(&h, ask("foo.apps.example.test")).await.0,
         StatusCode::OK
     );
+    // Platform hosts fall under the wildcard's on-demand policy too.
+    assert_eq!(
+        call(&h, ask("connect.apps.example.test")).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&h, ask("mcp.apps.example.test")).await.0,
+        StatusCode::OK
+    );
     for d in [
         "bar.apps.example.test",
-        "connect.apps.example.test",
+        "www.apps.example.test",
         "x.foo.apps.example.test",
         "foo.evil.test",
         "apps.example.test",

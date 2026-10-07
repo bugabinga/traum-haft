@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{title}}</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <h1>{{title}}</h1>
+      <p id="status">Verbinde …</p>
+      <form id="new-note" hidden>
+        <input id="note-text" maxlength="500" placeholder="Neue Notiz" required />
+        <button type="submit">Hinzufügen</button>
+      </form>
+      <ul id="notes"></ul>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

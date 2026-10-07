@@ -1,0 +1,8 @@
+# Manifest of a traum-haft app. The platform enforces it; the agent edits it.
+name = "{{app}}"
+title = "{{title}}"
+
+# Integrations this app may call through /_api/<provider>/..., with scopes.
+# Undeclared providers or scopes are refused. Example:
+# integrations = ["jira:read", "crmplus:read"]
+integrations = []

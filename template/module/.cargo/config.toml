@@ -1,0 +1,4 @@
+# Set when the app is created; the platform build overrides them.
+[env]
+TRAUM_HAFT_ISSUER = "https://apps.isp-insoft.de"
+TRAUM_HAFT_APP = "{{app}}"
