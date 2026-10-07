@@ -8,11 +8,12 @@ pub const RESERVED_NAMES: &[&str] = &[
     "connect", "mcp", "www", "api", "admin", "platform", "static",
 ];
 
-/// Suffix of an app's preview deployment, e.g. `notes--preview`.
-pub const PREVIEW_SUFFIX: &str = "--preview";
+/// Suffix of an app's preview deployment, e.g. `notes-preview`. One hyphen:
+/// SpacetimeDB refuses `--` in database names.
+pub const PREVIEW_SUFFIX: &str = "-preview";
 
 /// Lowercase letters, digits, single hyphens inside, at most 40 characters,
-/// not reserved. Preview names (`<app>--preview`) are valid too.
+/// not reserved. Preview names (`<app>-preview`) are valid too.
 pub fn is_valid_app_name(name: &str) -> bool {
     let len_ok = (1..=50).contains(&name.len());
     let chars_ok = name
@@ -22,9 +23,13 @@ pub fn is_valid_app_name(name: &str) -> bool {
     len_ok && chars_ok && edges_ok && !RESERVED_NAMES.contains(&name)
 }
 
-/// Names a builder may create: like above, but no `--` (kept for previews).
+/// Names a builder may create: like above, single hyphens only (SpacetimeDB),
+/// and not ending in the preview suffix.
 pub fn is_creatable_app_name(name: &str) -> bool {
-    name.len() <= 40 && is_valid_app_name(name) && !name.contains("--")
+    name.len() <= 40
+        && is_valid_app_name(name)
+        && !name.contains("--")
+        && !name.ends_with(PREVIEW_SUFFIX)
 }
 
 #[cfg(test)]
@@ -33,7 +38,7 @@ mod tests {
 
     #[test]
     fn names() {
-        for ok in ["notes", "jira-report", "a1", "notes--preview"] {
+        for ok in ["notes", "jira-report", "a1", "notes-preview"] {
             assert!(is_valid_app_name(ok), "{ok}");
         }
         for bad in [
@@ -50,6 +55,7 @@ mod tests {
             assert!(!is_valid_app_name(bad), "{bad}");
         }
         assert!(is_creatable_app_name("jira-report"));
-        assert!(!is_creatable_app_name("notes--preview"));
+        assert!(!is_creatable_app_name("notes-preview"));
+        assert!(!is_creatable_app_name("a--b"));
     }
 }

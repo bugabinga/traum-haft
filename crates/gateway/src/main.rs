@@ -20,6 +20,8 @@ fn env(name: &str) -> Result<String, String> {
 async fn main() -> Result<(), String> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        // No color codes in journald.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     let apps_domain = env("GATEWAY_APPS_DOMAIN")?;
@@ -119,5 +121,8 @@ async fn main() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|e| e.to_string())?;
-    axum::serve(listener, app).await.map_err(|e| e.to_string())
+    axum::serve(listener, app)
+        .with_graceful_shutdown(traum_haft_common::shutdown::signal())
+        .await
+        .map_err(|e| e.to_string())
 }

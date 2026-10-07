@@ -4,6 +4,10 @@ import { McpClient, call } from "./mcp-client.mjs";
 const MCP = "https://mcp.apps.isp-insoft.de";
 const APPS = process.env.APPS_DIR;
 import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+const GH = process.env.GITHUB_DIR;
+const seen = async () => (await fetch("http://127.0.0.1:39400/_seen")).json();
+const git = (...a) => execFileSync("git", ["-C", `${GH}/app-board.git`, ...a]).toString().trim();
 
 let pass = 0, fail = 0;
 async function check(name, fn) {
@@ -62,9 +66,47 @@ await check("alice edits and deploys version 1", async () => {
   const src = JSON.parse((await alice.tool("get_source", { app: "board" })).text).files;
   const html = src.find((f) => f.path === "web/index.html").content.replaceAll("Board", "Team-Board");
   assert((await alice.tool("write_files", { app: "board", files: [{ path: "web/index.html", content: html }] })).ok);
-  const d = await alice.tool("deploy", { app: "board", message: "Titel geändert" });
+  const d = await alice.deploy({ app: "board", message: "Titel geändert" });
   assert(d.ok && d.text.includes("version 1") && d.text.includes("new database"), d.text);
   assert(readFileSync(`${APPS}/board/current/index.html`, "utf8").includes("Team-Board"), "release not live");
+});
+
+await check("GitHub: private repo created, history and release tag pushed", async () => {
+  const s = await seen();
+  const repo = s.repos.find((r) => r.name === "app-board");
+  assert(repo && repo.private === true && repo.org === "isp-insoft-gmbh", JSON.stringify(s.repos));
+  assert(git("log", "--format=%s", "main").includes("Titel geändert"), "commit not pushed");
+  assert(git("rev-parse", "v1^{commit}") === git("rev-parse", "main"), "tag v1 missing");
+  assert(!readFileSync(`${GH}/app-board.git/config`, "utf8").includes("x-access-token"), "token stored");
+});
+
+await check("GitHub Actions: build dispatched with version + target; first build outlived the tool call", async () => {
+  const d = (await seen()).dispatches.filter((x) => x.repo === "app-board");
+  assert(d.length === 1 && d[0].inputs.version === "1" && d[0].inputs.target === "board", JSON.stringify(d));
+  assert(alice.stillBuilding >= 1, "deploy never answered 'Still building'; lower DEPLOY_WAIT");
+});
+
+await check("compile error: Actions build fails, compiler message returned, live unchanged", async () => {
+  const src = JSON.parse((await alice.tool("get_source", { app: "board" })).text).files;
+  const lib = src.find((f) => f.path === "module/src/lib.rs").content;
+  try {
+    await alice.tool("write_files", { app: "board", files: [{ path: "module/src/lib.rs", content: lib + "\nfn broken() -> u32 { \"nope\" }\n" }] });
+    const d = await alice.deploy({ app: "board", message: "kaputt" });
+    assert(!d.ok && d.text.includes("Build failed") && d.text.includes("mismatched types"), d.text.slice(-600));
+    assert(JSON.parse((await alice.tool("status", { app: "board" })).text).live_version === 1, "live changed");
+  } finally {
+    await alice.tool("write_files", { app: "board", files: [{ path: "module/src/lib.rs", content: lib }] });
+  }
+});
+
+await check("preview deploy: own target and database; release tags untouched", async () => {
+  const v1 = git("rev-parse", "v1^{commit}");
+  const d = await alice.deploy({ app: "board", message: "Vorschau", preview: true });
+  assert(d.ok && d.text.includes("board-preview version 1"), d.text);
+  const last = (await seen()).dispatches.at(-1);
+  assert(last.inputs.target === "board-preview", JSON.stringify(last));
+  assert(git("rev-parse", "v1^{commit}") === v1, "preview moved tag v1");
+  assert(JSON.parse((await alice.tool("status", { app: "board" })).text).live_version === 1, "preview changed live");
 });
 
 await check("bob cannot see or change alice's app", async () => {
@@ -85,7 +127,7 @@ await check("schema change that would delete data is refused; live version uncha
   assert(changed !== lib, "test edit did not apply");
   try {
     await alice.tool("write_files", { app: "board", files: [{ path: "module/src/lib.rs", content: changed }] });
-    const d = await alice.tool("deploy", { app: "board", message: "Spaltentyp geändert" });
+    const d = await alice.deploy({ app: "board", message: "Spaltentyp geändert" });
     assert(!d.ok && d.text.includes("delete the app's data"), d.text.slice(0, 400));
     const s = JSON.parse((await alice.tool("status", { app: "board" })).text);
     assert(s.live_version === 1, `live ${s.live_version}`);
@@ -98,9 +140,9 @@ await check("platform agent: may fix any app, may not create apps or delete data
   triage = await new McpClient(MCP, "triage@isp-insoft.de").connect();
   assert((await triage.tool("list_apps", {})).text.includes("board"), "agent cannot see board");
   assert(!(await triage.tool("create_app", { name: "x1", title: "x" })).ok, "agent created an app");
-  const loss = await triage.tool("deploy", { app: "board", message: "x", confirm_data_loss: true });
+  const loss = await triage.deploy({ app: "board", message: "x", confirm_data_loss: true });
   assert(!loss.ok && loss.text.includes("only the builder"), loss.text);
-  const d = await triage.tool("deploy", { app: "board", message: "Automatische Korrektur" });
+  const d = await triage.deploy({ app: "board", message: "Automatische Korrektur" });
   assert(d.ok && d.text.includes("version 2"), d.text);
   const h = await alice.tool("history", { app: "board" });
   assert(h.text.includes("traum-haft triage (Claude): Automatische Korrektur"), h.text);

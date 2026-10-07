@@ -7,6 +7,9 @@ on:
       version:
         description: Release number
         required: true
+      target:
+        description: "{{app}} or {{app}}-preview (token audience and database)"
+        required: true
 
 permissions:
   contents: read
@@ -15,6 +18,6 @@ jobs:
   build:
     uses: bugabinga/traum-haft/.github/workflows/build-app.yml@main
     with:
-      app: "{{app}}"
-      issuer: https://apps.isp-insoft.de
+      app: ${{ inputs.target }}
+      issuer: "{{issuer}}"
       version: ${{ inputs.version }}

@@ -21,7 +21,7 @@ await check("triage reads the report (marked untrusted)", async () => {
   number = report.number;
 });
 await check("triage ships the fix; issue closed; reporter and builder emailed", async () => {
-  const d = await triage.tool("deploy", { app: "board", message: "Notizen nach Datum sortiert", fixes_issue: number });
+  const d = await triage.deploy({ app: "board", message: "Notizen nach Datum sortiert", fixes_issue: number });
   assert(d.ok && d.text.includes("closed"), d.text);
   const s = await seen();
   assert(s.issues[number - 1].state === "closed", "issue still open");

@@ -26,7 +26,13 @@ pub struct AppState {
     pub google: google::GoogleLogin,
     pub store: apps::AppStore,
     pub stdb: stdb::Spacetime,
-    pub builder: builder::LocalBuilder,
+    pub builder: builder::Builder,
+    /// e.g. `https://x-access-token:{token}@github.com/{org}/{repo}.git`
+    pub git_remote: String,
+    pub github_org: String,
+    /// How long `deploy` waits before answering "still building".
+    pub deploy_wait: std::time::Duration,
+    pub jobs: std::sync::Mutex<HashMap<String, DeployJob>>,
     pub github: Option<GitHubApp>,
     pub platform_repo: String,
     pub mailer: Option<Mailer>,
@@ -45,7 +51,10 @@ impl AppState {
         google: google::GoogleLogin,
         store: apps::AppStore,
         stdb: stdb::Spacetime,
-        builder: builder::LocalBuilder,
+        builder: builder::Builder,
+        git_remote: String,
+        github_org: String,
+        deploy_wait: std::time::Duration,
         github: Option<GitHubApp>,
         platform_repo: String,
         mailer: Option<Mailer>,
@@ -60,6 +69,10 @@ impl AppState {
             store,
             stdb,
             builder,
+            git_remote,
+            github_org,
+            deploy_wait,
+            jobs: Default::default(),
             github,
             platform_repo,
             mailer,
@@ -76,6 +89,30 @@ impl AppState {
             .entry(app.to_string())
             .or_default()
             .clone()
+    }
+}
+
+/// The last deploy of an app, for `status` when a build outlives a tool call.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DeployJob {
+    pub state: &'static str,
+    pub message: String,
+    pub started_at: u64,
+}
+
+impl AppState {
+    /// Push URL for an app repository, with a token scoped to that repo.
+    pub async fn remote_url(&self, app: &str) -> Result<Option<String>, String> {
+        let Some(gh) = &self.github else {
+            return Ok(None);
+        };
+        let token = gh.repo_token(app).await.map_err(|e| e.to_string())?;
+        Ok(Some(
+            self.git_remote
+                .replace("{token}", &token)
+                .replace("{org}", &self.github_org)
+                .replace("{repo}", &gh.repo_name(app)),
+        ))
     }
 }
 

@@ -141,7 +141,9 @@ impl OAuthServer {
     async fn save(&self, data: &Persisted) {
         let tmp = self.file.with_extension("tmp");
         if let Ok(text) = serde_json::to_string(data) {
-            let ok = tokio::fs::write(&tmp, text).await.is_ok()
+            // Client registrations and refresh tokens: owner-only.
+            let _ = std::fs::remove_file(&tmp);
+            let ok = traum_haft_common::keys::write_private(&tmp, &text).is_ok()
                 && tokio::fs::rename(&tmp, &self.file).await.is_ok();
             if !ok {
                 tracing::error!("could not persist OAuth state");

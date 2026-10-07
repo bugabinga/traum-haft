@@ -47,7 +47,8 @@ openssl ec -in "$work/stdb/keys/id_ecdsa" -pubout -out "$work/stdb/keys/id_ecdsa
 bg spacetimedb "$stdb_bin/spacetimedb-standalone" start --data-dir "$work/stdb/data" --listen-addr 127.0.0.4:3000 \
   --jwt-pub-key-path "$work/stdb/keys/id_ecdsa.pub" --jwt-priv-key-path "$work/stdb/keys/id_ecdsa" --non-interactive
 
-bg upstreams node "$here/upstreams.mjs" 39400 39425
+mkdir -p "$work/github"
+GITHUB_DIR="$work/github" SPACETIME_BIN="$stdb_bin" bg upstreams node "$here/upstreams.mjs" 39400 39425
 wait_for http://127.0.0.1:39400/_seen
 openssl genrsa -out "$work/github-app.pem" 2048 2>/dev/null
 
@@ -89,6 +90,7 @@ MCP_APPS_DOMAIN=apps.isp-insoft.de MCP_ORIGIN=https://mcp.apps.isp-insoft.de MCP
   MCP_PLATFORM_AGENTS=triage@isp-insoft.de \
   MCP_GITHUB_API=http://127.0.0.1:39400/github MCP_GITHUB_ORG=isp-insoft-gmbh MCP_GITHUB_APP_ID=1 MCP_GITHUB_KEY_FILE="$work/github-app.pem" \
   MCP_SMTP_URL=smtp://127.0.0.1:39425 MCP_MAIL_FROM="traum-haft <traum-haft@isp-insoft.de>" \
+  MCP_BUILDER=actions MCP_GIT_REMOTE="file://$work/github/{repo}.git" MCP_BUILD_POLL_SECS=1 MCP_DEPLOY_WAIT_SECS="${DEPLOY_WAIT:-20}" \
   bg mcp "$root/target/release/traum-haft-mcp"
 wait_for http://127.0.0.5:8080/.well-known/oauth-authorization-server
 
@@ -102,7 +104,7 @@ if [ -n "${HOLD:-}" ]; then echo "== stack up (HOLD), work dir $work"; sleep inf
 
 echo "== browser"
 echo "== MCP (as Cowork)"
-APPS_DIR="$work/apps" env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy node "$here/mcp.mjs"
+APPS_DIR="$work/apps" GITHUB_DIR="$work/github" env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy node "$here/mcp.mjs"
 
 # The browser must reach the local edge directly, not through an HTTP proxy
 # from the environment (Playwright passes those on to Chromium).

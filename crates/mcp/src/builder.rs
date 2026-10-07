@@ -159,10 +159,141 @@ impl LocalBuilder {
         if !dist.join("index.html").exists() {
             return Err("web build produced no dist/index.html".into());
         }
+        // Like the workflow's "Collect release": the committed app.toml, not the draft's.
+        std::fs::copy(src.join("app.toml"), dist.join("app.toml"))
+            .map_err(|e| format!("app.toml: {e}"))?;
         Ok(BuildOutput {
             wasm,
             dist,
             _work: work,
         })
     }
+}
+
+/// Production builds: the app repository's `build.yml` (which calls the
+/// platform's reusable workflow) runs on GitHub's runners; the MCP waits for
+/// it and downloads the `release` artifact.
+pub struct ActionsBuilder {
+    pub cache_dir: PathBuf,
+    pub poll: Duration,
+    pub timeout: Duration,
+}
+
+impl ActionsBuilder {
+    pub async fn build(
+        &self,
+        gh: &traum_haft_common::github::GitHubApp,
+        app: &str,
+        target: &str,
+        version: u64,
+        sha: &str,
+    ) -> Result<BuildOutput, String> {
+        let known: Vec<u64> = gh
+            .runs_for_commit(app, sha)
+            .await
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter_map(|r| r["id"].as_u64())
+            .collect();
+        gh.dispatch_workflow(
+            app,
+            "build.yml",
+            "main",
+            &serde_json::json!({ "version": version.to_string(), "target": target }),
+        )
+        .await
+        .map_err(|e| format!("could not start the build: {e}"))?;
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        // Wait for the run this dispatch created.
+        let run_id = loop {
+            if tokio::time::Instant::now() > deadline {
+                return Err("the build did not start in time".into());
+            }
+            tokio::time::sleep(self.poll).await;
+            let runs = gh
+                .runs_for_commit(app, sha)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(id) = runs
+                .iter()
+                .filter_map(|r| r["id"].as_u64())
+                .find(|id| !known.contains(id))
+            {
+                break id;
+            }
+        };
+        let run = loop {
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!("the build (run {run_id}) did not finish in time"));
+            }
+            let run = gh.run(app, run_id).await.map_err(|e| e.to_string())?;
+            if run["status"] == "completed" {
+                break run;
+            }
+            tokio::time::sleep(self.poll).await;
+        };
+        if run["conclusion"] != "success" {
+            let log = gh.failed_job_log(app, run_id).await.unwrap_or_default();
+            return Err(format!(
+                "build failed ({}): {}\n{}",
+                run["conclusion"].as_str().unwrap_or("unknown"),
+                run["html_url"].as_str().unwrap_or_default(),
+                tail(log.as_bytes(), 60)
+            ));
+        }
+        let zip = gh
+            .artifact_zip(app, run_id, "release")
+            .await
+            .map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&self.cache_dir).map_err(|e| e.to_string())?;
+        let work = tempdir::Dir::new(&self.cache_dir, &format!("release-{target}"))
+            .map_err(|e| e.to_string())?;
+        let dist = work.path().join("release");
+        unzip(&zip, &dist)?;
+        let wasm = std::fs::read(dist.join("module.wasm"))
+            .map_err(|_| "artifact has no module.wasm".to_string())?;
+        for f in ["index.html", "app.toml"] {
+            if !dist.join(f).exists() {
+                return Err(format!("artifact has no {f}"));
+            }
+        }
+        Ok(BuildOutput {
+            wasm,
+            dist,
+            _work: work,
+        })
+    }
+}
+
+/// Extracts a zip, refusing entries that would land outside `to`.
+fn unzip(bytes: &[u8], to: &Path) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|e| format!("artifact is not a zip: {e}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(format!(
+                "artifact entry escapes its folder: {}",
+                entry.name()
+            ));
+        };
+        let out = to.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Where builds run.
+pub enum Builder {
+    /// Development and tests only: runs agent code on this machine.
+    Local(LocalBuilder),
+    Actions(ActionsBuilder),
 }

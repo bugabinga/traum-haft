@@ -82,7 +82,9 @@ fn generate_pem() -> Result<String, KeyError> {
     }
 }
 
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+/// Writes a file only its owner can read (0600). Creates it new: fails if
+/// `path` exists.
+pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;

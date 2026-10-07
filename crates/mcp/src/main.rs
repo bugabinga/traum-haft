@@ -18,6 +18,8 @@ fn env_or(name: &str, default: &str) -> String {
 async fn main() -> Result<(), String> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        // No color codes in journald.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
     let apps_domain = env("MCP_APPS_DOMAIN")?;
     let data_dir = PathBuf::from(env_or("MCP_DATA_DIR", "/data"));
@@ -55,10 +57,25 @@ async fn main() -> Result<(), String> {
         http.clone(),
     )
     .await?;
-    let builder = builder::LocalBuilder {
-        issuer,
-        spacetime_cli: PathBuf::from(env_or("MCP_SPACETIME_CLI", "spacetime")),
-        cache_dir: data_dir.join("build-cache"),
+    let builder = match env_or("MCP_BUILDER", "local").as_str() {
+        "actions" => builder::Builder::Actions(builder::ActionsBuilder {
+            cache_dir: data_dir.join("build-cache"),
+            poll: std::time::Duration::from_secs(
+                env_or("MCP_BUILD_POLL_SECS", "5").parse().unwrap_or(5),
+            ),
+            timeout: std::time::Duration::from_secs(20 * 60),
+        }),
+        "local" => {
+            tracing::warn!(
+                "MCP_BUILDER=local runs agent-written code on this machine; development only"
+            );
+            builder::Builder::Local(builder::LocalBuilder {
+                issuer,
+                spacetime_cli: PathBuf::from(env_or("MCP_SPACETIME_CLI", "spacetime")),
+                cache_dir: data_dir.join("build-cache"),
+            })
+        }
+        other => return Err(format!("MCP_BUILDER must be actions or local, not {other}")),
     };
     let github = match std::env::var("MCP_GITHUB_APP_ID") {
         Ok(id) => Some(
@@ -93,6 +110,14 @@ async fn main() -> Result<(), String> {
         store,
         stdb,
         builder,
+        env_or(
+            "MCP_GIT_REMOTE",
+            "https://x-access-token:{token}@github.com/{org}/{repo}.git",
+        ),
+        env_or("MCP_GITHUB_ORG", ""),
+        std::time::Duration::from_secs(
+            env_or("MCP_DEPLOY_WAIT_SECS", "200").parse().unwrap_or(200),
+        ),
         github,
         env_or("MCP_PLATFORM_REPO", "traum-haft"),
         mailer,
@@ -107,6 +132,7 @@ async fn main() -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     axum::serve(listener, router(Arc::new(state)))
+        .with_graceful_shutdown(traum_haft_common::shutdown::signal())
         .await
         .map_err(|e| e.to_string())
 }

@@ -47,8 +47,8 @@ impl Spacetime {
                     .as_str()
                     .ok_or("SpacetimeDB issued no token")?
                     .to_string();
-                tokio::fs::write(token_file, &t)
-                    .await
+                // Owner of every app database: readable by this service only.
+                traum_haft_common::keys::write_private(token_file, &t)
                     .map_err(|e| e.to_string())?;
                 t
             }

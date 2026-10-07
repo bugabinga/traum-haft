@@ -12,6 +12,7 @@ use traum_haft_common::names::{PREVIEW_SUFFIX, is_creatable_app_name};
 use crate::AppState;
 use crate::stdb::Plan;
 
+#[derive(Clone)]
 pub struct Caller {
     pub sub: String,
     pub email: String,
@@ -54,7 +55,7 @@ pub fn definitions() -> Value {
         },
         {
             "name": "deploy",
-            "description": "Commit the draft, build it, migrate the database and put it live. With preview=true it goes to <app>--preview with its own database. Fails with compiler errors to fix. Schema changes that would delete data need confirm_data_loss=true, which only the builder may set after asking the user.",
+            "description": "Commit the draft, build it, migrate the database and put it live. With preview=true it goes to <app>-preview with its own database. Fails with compiler errors to fix. Schema changes that would delete data need confirm_data_loss=true, which only the builder may set after asking the user.",
             "inputSchema": { "type": "object", "properties": {
                 "app": app,
                 "message": { "type": "string", "description": "What changed, in one sentence" },
@@ -178,11 +179,34 @@ async fn create_app(s: &Arc<AppState>, c: &Caller, args: &Value) -> Out {
     s.store
         .create(app, title, &c.sub, &c.email, &c.name)
         .await?;
+    if let Err(e) = mirror_new_repo(s, app, title).await {
+        // Leave nothing behind, so the name stays usable.
+        let _ = std::fs::remove_dir_all(s.store.repo(app));
+        let _ = std::fs::remove_dir_all(s.store.apps_dir.join(app));
+        return Err(format!("Could not create the GitHub repository: {e}"));
+    }
     tracing::info!(target: "audit", sub = %c.sub, %app, "app created");
     Ok(format!(
         "Created {app}. Next: get_source to read the template, write_files to change it, deploy to put it live at {}.",
         app_url(s, app)
     ))
+}
+
+async fn mirror_new_repo(s: &AppState, app: &str, title: &str) -> Result<(), String> {
+    let Some(gh) = &s.github else { return Ok(()) };
+    match gh
+        .create_repo(app, &format!("traum-haft app: {title}"))
+        .await
+    {
+        // Left over from an earlier failed attempt; a push with foreign
+        // history is refused anyway.
+        Err(traum_haft_common::github::GitHubError::Status { status: 422, .. }) => {}
+        r => r.map_err(|e| e.to_string())?,
+    }
+    if let Some(url) = s.remote_url(app).await? {
+        s.store.push(app, &url).await?;
+    }
+    Ok(())
 }
 
 fn list_apps(s: &AppState, c: &Caller) -> String {
@@ -248,7 +272,50 @@ fn delete_files(s: &AppState, c: &Caller, args: &Value) -> Out {
     ))
 }
 
+/// Runs the deploy as a job; answers when it finishes or after
+/// `deploy_wait`, whichever comes first (MCP tool calls time out).
 async fn deploy(s: &Arc<AppState>, c: &Caller, args: &Value) -> Out {
+    let app = arg_str(args, "app")?.to_string();
+    owned(s, c, &app)?;
+    {
+        let jobs = s.jobs.lock().unwrap();
+        if jobs.get(&app).is_some_and(|j| j.state == "building") {
+            return Err(format!(
+                "{app} is already being deployed; check status({app})"
+            ));
+        }
+    }
+    s.jobs.lock().unwrap().insert(
+        app.clone(),
+        crate::DeployJob {
+            state: "building",
+            message: String::new(),
+            started_at: crate::oauth::now(),
+        },
+    );
+    let (s2, c2, args2, app2) = (s.clone(), c.clone(), args.clone(), app.clone());
+    let job = tokio::spawn(async move {
+        let result = deploy_now(&s2, &c2, &args2).await;
+        let (state, message) = match &result {
+            Ok(m) => ("done", m.clone()),
+            Err(e) => ("failed", e.clone()),
+        };
+        if let Some(j) = s2.jobs.lock().unwrap().get_mut(&app2) {
+            j.state = state;
+            j.message = message;
+        }
+        result
+    });
+    match tokio::time::timeout(s.deploy_wait, job).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => Err(format!("deploy crashed: {e}")),
+        Err(_) => Ok(format!(
+            "Still building {app} (builds run on GitHub Actions). Call status(app=\"{app}\") in a minute to see the result."
+        )),
+    }
+}
+
+async fn deploy_now(s: &Arc<AppState>, c: &Caller, args: &Value) -> Out {
     let app = arg_str(args, "app")?;
     let message = arg_str(args, "message")?.trim();
     let mut meta = owned(s, c, app)?;
@@ -280,16 +347,32 @@ async fn deploy(s: &Arc<AppState>, c: &Caller, args: &Value) -> Out {
     };
     let commit = s.store.commit(app, &msg, (&author.0, &author.1)).await?;
     let mut target_meta = if preview {
-        s.store.meta(&target).unwrap_or_else(|| meta.clone())
+        // Same owner, own version count.
+        s.store.meta(&target).unwrap_or_else(|| crate::apps::Meta {
+            version: 0,
+            deployed_at: 0,
+            ..meta.clone()
+        })
     } else {
         meta.clone()
     };
     let version = target_meta.version + 1;
-    let out = s
-        .builder
-        .build(&s.store.repo(app), &target, version)
-        .await
-        .map_err(|e| format!("Build failed; the live version is unchanged.\n\n{e}"))?;
+    let remote = s.remote_url(app).await?;
+    if let Some(url) = &remote {
+        s.store.push(app, url).await?;
+    }
+    let built = match &s.builder {
+        crate::builder::Builder::Local(b) => b.build(&s.store.repo(app), &target, version).await,
+        crate::builder::Builder::Actions(b) => {
+            let gh = s
+                .github
+                .as_ref()
+                .ok_or("Actions builds need the GitHub App")?;
+            b.build(gh, app, &target, version, &s.store.head(app).await?)
+                .await
+        }
+    };
+    let out = built.map_err(|e| format!("Build failed; the live version is unchanged.\n\n{e}"))?;
 
     let migration = match s.stdb.plan(&target, &out.wasm).await? {
         Plan::New => {
@@ -328,7 +411,15 @@ async fn deploy(s: &Arc<AppState>, c: &Caller, args: &Value) -> Out {
         }
     };
     s.store.install(&target, version, &out.dist, &out.wasm)?;
-    s.store.tag(app, version).await.ok();
+    // Previews count their own versions; only releases are tagged.
+    if !preview {
+        s.store.tag(app, version).await.ok();
+    }
+    if let Some(url) = &remote
+        && let Err(e) = s.store.push(app, url).await
+    {
+        tracing::warn!(error = %e, %app, "pushing the release tag failed");
+    }
     target_meta.version = version;
     target_meta.deployed_at = crate::oauth::now();
     s.store.save_meta(&target, &target_meta)?;
@@ -427,6 +518,7 @@ async fn status(s: &Arc<AppState>, c: &Caller, args: &Value) -> Out {
         "deployed_at": meta.deployed_at,
         "owner": meta.owner_email,
         "draft_has_undeployed_changes": dirty,
+        "last_deploy": s.jobs.lock().unwrap().get(app).cloned(),
     }))
     .unwrap_or_default())
 }

@@ -179,6 +179,7 @@ impl AppStore {
         copy_template(&self.template_dir, &repo, &|text: &str| {
             text.replace("{{app}}", app)
                 .replace("{{title}}", title)
+                .replace("{{issuer}}", &self.issuer)
                 .replace(
                     r#"traum-haft-module = { path = "../../crates/traum-haft-module" }"#,
                     &format!("traum-haft-module = {}", self.module_crate_dep),
@@ -273,6 +274,26 @@ impl AppStore {
         .map(|_| ())
     }
 
+    /// Pushes main and tags to the app's GitHub repository. The URL carries
+    /// a short-lived token and is never stored in the repo's config.
+    pub async fn push(&self, app: &str, url: &str) -> Result<(), String> {
+        let repo = self.repo(app);
+        git(&repo, &["push", "-q", url, "HEAD:refs/heads/main"], None)
+            .await
+            .map_err(|e| redact(&e, url))?;
+        git(&repo, &["push", "-q", url, "--tags"], None)
+            .await
+            .map_err(|e| redact(&e, url))?;
+        Ok(())
+    }
+
+    pub async fn head(&self, app: &str) -> Result<String, String> {
+        Ok(git(&self.repo(app), &["rev-parse", "HEAD"], None)
+            .await?
+            .trim()
+            .to_string())
+    }
+
     pub async fn history(&self, app: &str) -> Result<String, String> {
         git(
             &self.repo(app),
@@ -301,9 +322,11 @@ impl AppStore {
         if dir.exists() {
             std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
         }
+        // The build output carries the app.toml it was built from.
+        if !dist.join("app.toml").is_file() {
+            return Err("build output has no app.toml".into());
+        }
         copy_dir(dist, &dir)?;
-        std::fs::copy(self.repo(app).join("app.toml"), dir.join("app.toml"))
-            .map_err(|e| format!("app.toml: {e}"))?;
         std::fs::write(dir.join("module.wasm"), wasm).map_err(|e| e.to_string())?;
         self.switch(app, version)
     }
@@ -379,4 +402,33 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Error text without the token-bearing URL.
+/// Hides the push URL and, in case git prints it in another form, its
+/// credentials.
+fn redact(err: &str, url: &str) -> String {
+    let mut out = err.replace(url, "<app repository>");
+    if let Some((_, rest)) = url.split_once("://")
+        && let Some((userinfo, _)) = rest.split_once('@')
+    {
+        for secret in [userinfo, userinfo.rsplit(':').next().unwrap_or_default()] {
+            if !secret.is_empty() {
+                out = out.replace(secret, "***");
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn redact_hides_token_in_any_form() {
+        let url = "https://x-access-token:ghs_SECRET@github.com/o/app-x.git";
+        let err = format!("fatal: {url}\nremote: https://github.com/o/app-x.git?t=ghs_SECRET");
+        let out = super::redact(&err, url);
+        assert!(!out.contains("ghs_SECRET"), "{out}");
+        assert!(out.contains("<app repository>"));
+    }
 }

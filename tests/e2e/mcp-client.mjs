@@ -111,4 +111,18 @@ export class McpClient {
     const res = await this.rpc("tools/call", { name, arguments: args });
     return { ok: !res.isError, text: res.content.map((c) => c.text).join("\n") };
   }
+
+  /** deploy, then follow status() while the build outlives the tool call (as Cowork would). */
+  async deploy(args, timeoutMs = 15 * 60_000) {
+    const r = await this.tool("deploy", args);
+    if (!(r.ok && r.text.startsWith("Still building"))) return r;
+    this.stillBuilding = (this.stillBuilding ?? 0) + 1;
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      await new Promise((ok) => setTimeout(ok, 2000));
+      const job = JSON.parse((await this.tool("status", { app: args.app })).text).last_deploy;
+      if (job && job.state !== "building") return { ok: job.state === "done", text: job.message };
+    }
+    throw new Error(`deploy of ${args.app} still building after ${timeoutMs} ms`);
+  }
 }

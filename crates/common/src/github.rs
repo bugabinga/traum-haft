@@ -267,4 +267,152 @@ impl GitHubApp {
         .await?;
         Ok(())
     }
+
+    /// Installation token limited to one app repository, e.g. for git push.
+    pub async fn repo_token(&self, app: &str) -> Result<String, GitHubError> {
+        self.token(Some(&self.repo_name(app))).await
+    }
+
+    /// Creates the private repository of an app.
+    pub async fn create_repo(&self, app: &str, description: &str) -> Result<(), GitHubError> {
+        let token = self.token(None).await?;
+        Self::send(
+            self.req(
+                reqwest::Method::POST,
+                &format!("/orgs/{}/repos", self.org),
+                &token,
+            )
+            .json(&json!({
+                "name": self.repo_name(app),
+                "private": true,
+                "description": description,
+                "has_wiki": false,
+                "has_projects": false,
+                "auto_init": false,
+            })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn dispatch_workflow(
+        &self,
+        app: &str,
+        workflow: &str,
+        git_ref: &str,
+        inputs: &Value,
+    ) -> Result<(), GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        Self::send(
+            self.req(
+                reqwest::Method::POST,
+                &format!(
+                    "/repos/{}/{repo}/actions/workflows/{workflow}/dispatches",
+                    self.org
+                ),
+                &token,
+            )
+            .json(&json!({ "ref": git_ref, "inputs": inputs })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Workflow runs of a commit, newest first.
+    pub async fn runs_for_commit(&self, app: &str, sha: &str) -> Result<Vec<Value>, GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        let res = Self::send(self.req(
+            reqwest::Method::GET,
+            &format!(
+                "/repos/{}/{repo}/actions/runs?event=workflow_dispatch&head_sha={sha}&per_page=20",
+                self.org
+            ),
+            &token,
+        ))
+        .await?;
+        Ok(res["workflow_runs"].as_array().cloned().unwrap_or_default())
+    }
+
+    pub async fn run(&self, app: &str, run_id: u64) -> Result<Value, GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        Self::send(self.req(
+            reqwest::Method::GET,
+            &format!("/repos/{}/{repo}/actions/runs/{run_id}", self.org),
+            &token,
+        ))
+        .await
+    }
+
+    /// The zip of a named artifact of a run.
+    pub async fn artifact_zip(
+        &self,
+        app: &str,
+        run_id: u64,
+        name: &str,
+    ) -> Result<Vec<u8>, GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        let list = Self::send(self.req(
+            reqwest::Method::GET,
+            &format!("/repos/{}/{repo}/actions/runs/{run_id}/artifacts", self.org),
+            &token,
+        ))
+        .await?;
+        let url = list["artifacts"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| x["name"] == name))
+            .and_then(|x| x["archive_download_url"].as_str())
+            .ok_or_else(|| GitHubError::Status {
+                status: 404,
+                body: format!("artifact {name} not found"),
+            })?
+            .to_string();
+        // GitHub redirects to blob storage; reqwest drops the Authorization
+        // header on cross-origin redirects.
+        let res = self
+            .http
+            .get(&url)
+            .bearer_auth(&token)
+            .header("User-Agent", "traum-haft")
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(GitHubError::Status {
+                status: res.status().as_u16(),
+                body: "artifact download failed".into(),
+            });
+        }
+        Ok(res.bytes().await?.to_vec())
+    }
+
+    /// Log text of the first failed job of a run (for build errors).
+    pub async fn failed_job_log(&self, app: &str, run_id: u64) -> Result<String, GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        let jobs = Self::send(self.req(
+            reqwest::Method::GET,
+            &format!("/repos/{}/{repo}/actions/runs/{run_id}/jobs", self.org),
+            &token,
+        ))
+        .await?;
+        let Some(job) = jobs["jobs"]
+            .as_array()
+            .and_then(|j| j.iter().find(|x| x["conclusion"] == "failure"))
+        else {
+            return Ok(String::new());
+        };
+        let id = job["id"].as_u64().unwrap_or(0);
+        let res = self
+            .req(
+                reqwest::Method::GET,
+                &format!("/repos/{}/{repo}/actions/jobs/{id}/logs", self.org),
+                &token,
+            )
+            .send()
+            .await?;
+        Ok(res.text().await.unwrap_or_default())
+    }
 }
