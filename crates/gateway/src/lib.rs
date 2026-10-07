@@ -25,14 +25,7 @@ use serde_json::json;
 
 use crate::keys::SigningKey;
 
-/// Platform hosts under the apps domain. Caddy's wildcard site uses
-/// on-demand TLS, and its policy also covers these, so `tls-ask` approves them.
-pub const PLATFORM_HOSTS: &[&str] = &["connect", "mcp"];
-
-/// Subdomains of the apps domain that can never be app names.
-pub const RESERVED_NAMES: &[&str] = &[
-    "connect", "mcp", "www", "api", "admin", "platform", "static",
-];
+pub use traum_haft_common::names::{PLATFORM_HOSTS, RESERVED_NAMES, is_valid_app_name};
 
 pub struct Config {
     /// Public issuer URL, e.g. `https://apps.isp-insoft.de`.
@@ -220,13 +213,3 @@ async fn tls_ask(State(state): State<Arc<AppState>>, Query(q): Query<TlsAsk>) ->
     }
 }
 
-/// One DNS label: lowercase letters, digits, single hyphens inside, at most
-/// 40 characters, not reserved and not a preview suffix by itself.
-pub fn is_valid_app_name(name: &str) -> bool {
-    let len_ok = (1..=40).contains(&name.len());
-    let chars_ok = name
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    let edges_ok = !name.starts_with('-') && !name.ends_with('-');
-    len_ok && chars_ok && edges_ok && !RESERVED_NAMES.contains(&name)
-}

@@ -2,5 +2,7 @@
 //! auto-triage routine, and email.
 
 pub mod github;
+pub mod keys;
 pub mod mail;
+pub mod names;
 pub mod routine;
