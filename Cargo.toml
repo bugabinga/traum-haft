@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/gateway"]
+exclude = ["tests/identity/whoami"]
 
 [workspace.package]
 edition = "2024"
