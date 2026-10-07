@@ -488,9 +488,10 @@ async fn crm_session(
             .lock()
             .unwrap()
             .get(cache_key)
-            && Instant::now() < *until {
-                return Ok(s.clone());
-            }
+        && Instant::now() < *until
+    {
+        return Ok(s.clone());
+    }
     let user = creds["username"].as_str().ok_or("CRM Plus not connected")?;
     let key = creds["access_key"]
         .as_str()

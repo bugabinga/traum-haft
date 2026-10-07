@@ -4,7 +4,9 @@
 pub const PLATFORM_HOSTS: &[&str] = &["connect", "mcp"];
 
 /// Subdomains that can never be app names.
-pub const RESERVED_NAMES: &[&str] = &["connect", "mcp", "www", "api", "admin", "platform", "static"];
+pub const RESERVED_NAMES: &[&str] = &[
+    "connect", "mcp", "www", "api", "admin", "platform", "static",
+];
 
 /// Suffix of an app's preview deployment, e.g. `notes--preview`.
 pub const PREVIEW_SUFFIX: &str = "--preview";
@@ -13,7 +15,9 @@ pub const PREVIEW_SUFFIX: &str = "--preview";
 /// not reserved. Preview names (`<app>--preview`) are valid too.
 pub fn is_valid_app_name(name: &str) -> bool {
     let len_ok = (1..=50).contains(&name.len());
-    let chars_ok = name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    let chars_ok = name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     let edges_ok = !name.starts_with('-') && !name.ends_with('-');
     len_ok && chars_ok && edges_ok && !RESERVED_NAMES.contains(&name)
 }
@@ -32,7 +36,17 @@ mod tests {
         for ok in ["notes", "jira-report", "a1", "notes--preview"] {
             assert!(is_valid_app_name(ok), "{ok}");
         }
-        for bad in ["", "Notes", "-x", "x-", "a_b", "a.b", "connect", "mcp", &"x".repeat(51)] {
+        for bad in [
+            "",
+            "Notes",
+            "-x",
+            "x-",
+            "a_b",
+            "a.b",
+            "connect",
+            "mcp",
+            &"x".repeat(51),
+        ] {
             assert!(!is_valid_app_name(bad), "{bad}");
         }
         assert!(is_creatable_app_name("jira-report"));

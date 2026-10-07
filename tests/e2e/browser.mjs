@@ -180,6 +180,27 @@ await check("Problem melden: issue, routine, mail to reporter and builder", asyn
   assert(to.includes("alice@isp-insoft.de") && to.includes("bob@isp-insoft.de"), JSON.stringify(to));
 });
 
+await check("app built by the MCP is live and works (board)", async () => {
+  await alice.goto("https://board.apps.isp-insoft.de/");
+  await alice.waitForFunction(() => document.querySelector("#status")?.textContent === "Verbunden", null, { timeout: 20000 });
+  assert((await alice.title()) === "Team-Board", `title ${await alice.title()}`);
+  await alice.fill("#note-text", "Board-Notiz");
+  await alice.click("#new-note button");
+  await alice.waitForSelector("#notes li >> text=Board-Notiz", { timeout: 10000 });
+});
+
+await check("visitor reports a problem in board (bob)", async () => {
+  await bob.goto("https://board.apps.isp-insoft.de/");
+  await bob.waitForFunction(() => document.querySelector("#status")?.textContent === "Verbunden", null, { timeout: 20000 });
+  bob.once("dialog", (d) => d.accept());
+  await bob.click("button.th-feedback");
+  await bob.fill(".th-dialog textarea", "Die Notizen sind nicht sortiert");
+  await bob.click(".th-dialog button[value=send]");
+  await bob.waitForTimeout(2000);
+  const s = await seen();
+  assert(s.issues.some((i) => i.repo === "app-board" && i.body.includes("bob@isp-insoft.de")), JSON.stringify(s.issues.map((i) => i.repo)));
+});
+
 await browser.close();
 console.log(`== ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -212,4 +212,3 @@ async fn tls_ask(State(state): State<Arc<AppState>>, Query(q): Query<TlsAsk>) ->
         StatusCode::NOT_FOUND
     }
 }
-

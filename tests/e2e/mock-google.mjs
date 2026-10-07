@@ -8,6 +8,8 @@ const issuer = `http://${host}:${port}`;
 const users = {
   "alice@isp-insoft.de": { sub: "google-alice", hd: "isp-insoft.de" },
   "bob@isp-insoft.de": { sub: "google-bob", hd: "isp-insoft.de" },
+  // The triage routine's account (platform agent in the MCP).
+  "triage@isp-insoft.de": { sub: "google-triage", hd: "isp-insoft.de" },
   // A private Google account on the company domain: no hd claim.
   "mallory@isp-insoft.de": { sub: "google-mallory-private" },
   "eve@gmail.com": { sub: "google-eve" },

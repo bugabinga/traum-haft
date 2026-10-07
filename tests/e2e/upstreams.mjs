@@ -8,7 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 const port = Number(process.argv[2] ?? 39400);
 const smtpPort = Number(process.argv[3] ?? 39425);
 const base = `http://127.0.0.1:${port}`;
-const seen = { jira: [], crm: [], issues: [], fires: [], mails: [] };
+const seen = { jira: [], crm: [], issues: [], fires: [], mails: [], comments: [] };
 const codes = new Map();
 
 const send = (res, status, obj, type = "application/json") => {
@@ -63,8 +63,20 @@ createServer(async (req, res) => {
   const issue = p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/issues$/);
   if (issue && req.method === "POST") {
     const b = JSON.parse(await body(req));
-    seen.issues.push({ repo: issue[2], ...b });
+    seen.issues.push({ repo: issue[2], state: "open", ...b });
     return send(res, 201, { number: seen.issues.length, html_url: `https://github.example/${issue[2]}/issues/${seen.issues.length}` });
+  }
+  const asGh = (i, n) => ({ number: n, title: i.title, body: i.body, state: i.state, labels: (i.labels ?? []).map((name) => ({ name })) });
+  if (issue && req.method === "GET") {
+    return send(res, 200, seen.issues.map((i, n) => [i, n + 1]).filter(([i]) => i.repo === issue[2] && i.state === "open").map(([i, n]) => asGh(i, n)));
+  }
+  const one = p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)(\/comments)?$/);
+  if (one) {
+    const n = Number(one[3]), i = seen.issues[n - 1];
+    if (!i || i.repo !== one[2]) return send(res, 404, { message: "Not Found" });
+    if (one[4] && req.method === "POST") { seen.comments.push({ repo: one[2], number: n, ...JSON.parse(await body(req)) }); return send(res, 201, {}); }
+    if (req.method === "PATCH") { Object.assign(i, JSON.parse(await body(req))); return send(res, 200, asGh(i, n)); }
+    return send(res, 200, asGh(i, n));
   }
   // Routine
   if (p === "/routine/fire") {

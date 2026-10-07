@@ -79,6 +79,19 @@ for app in notes other; do mkdir -p "$work/apps/$app" && cp -r "$work/web-dist" 
 printf 'name = "notes"\nintegrations = ["jira:read", "crmplus:read"]\n' > "$work/apps/notes/current/app.toml"
 printf '{"owner_email": "bob@isp-insoft.de"}' > "$work/apps/notes/meta.json"
 
+echo "== platform MCP"
+(cd "$root" && cargo build -q --release -p traum-haft-mcp)
+MCP_APPS_DOMAIN=apps.isp-insoft.de MCP_ORIGIN=https://mcp.apps.isp-insoft.de MCP_DATA_DIR="$work/mcp" \
+  MCP_GOOGLE_ISSUER="$MOCK_GOOGLE" MCP_GOOGLE_CLIENT_ID=e2e-client MCP_GOOGLE_CLIENT_SECRET=e2e-secret MCP_ALLOWED_DOMAIN=isp-insoft.de \
+  MCP_APP_TOKEN_ISSUER="$issuer" MCP_APPS_DIR="$work/apps" MCP_TEMPLATE_DIR="$root/template" \
+  MCP_MODULE_CRATE_DEP="{ path = \"$root/crates/traum-haft-module\" }" \
+  MCP_SPACETIME_URL=http://127.0.0.4:3000 MCP_SPACETIME_CLI="$stdb_bin/spacetimedb-cli" MCP_LISTEN=127.0.0.5:8080 \
+  MCP_PLATFORM_AGENTS=triage@isp-insoft.de \
+  MCP_GITHUB_API=http://127.0.0.1:39400/github MCP_GITHUB_ORG=isp-insoft-gmbh MCP_GITHUB_APP_ID=1 MCP_GITHUB_KEY_FILE="$work/github-app.pem" \
+  MCP_SMTP_URL=smtp://127.0.0.1:39425 MCP_MAIL_FROM="traum-haft <traum-haft@isp-insoft.de>" \
+  bg mcp "$root/target/release/traum-haft-mcp"
+wait_for http://127.0.0.5:8080/.well-known/oauth-authorization-server
+
 echo "== edge"
 bg caddy "$caddy" run --config "$work/Caddyfile" --adapter caddyfile
 for _ in $(seq 1 60); do
@@ -88,7 +101,13 @@ done
 if [ -n "${HOLD:-}" ]; then echo "== stack up (HOLD), work dir $work"; sleep infinity; fi
 
 echo "== browser"
+echo "== MCP (as Cowork)"
+APPS_DIR="$work/apps" env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy node "$here/mcp.mjs"
+
 # The browser must reach the local edge directly, not through an HTTP proxy
 # from the environment (Playwright passes those on to Chromium).
 PLAYWRIGHT_ROOT="$(npm root -g)" env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
   node "$here/browser.mjs"
+
+echo "== auto-triage (as the routine)"
+env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy node "$here/triage.mjs"

@@ -134,9 +134,10 @@ impl GitHubApp {
         let cache_key = repo.unwrap_or("*").to_string();
         let mut tokens = self.tokens.lock().await;
         if let Some((t, until)) = tokens.get(&cache_key)
-            && Instant::now() < *until {
-                return Ok(t.clone());
-            }
+            && Instant::now() < *until
+        {
+            return Ok(t.clone());
+        }
         let id = self.installation_id().await?;
         let body = match repo {
             Some(r) => json!({ "repositories": [r] }),
@@ -182,5 +183,88 @@ impl GitHubApp {
             number: res["number"].as_u64().unwrap_or(0),
             url: res["html_url"].as_str().unwrap_or_default().into(),
         })
+    }
+
+    /// Issue in any repository of the org (e.g. the platform repo).
+    pub async fn create_issue_in(
+        &self,
+        repo: &str,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> Result<Issue, GitHubError> {
+        let token = self.token(Some(repo)).await?;
+        let res = Self::send(
+            self.req(
+                reqwest::Method::POST,
+                &format!("/repos/{}/{repo}/issues", self.org),
+                &token,
+            )
+            .json(&json!({ "title": title, "body": body, "labels": labels })),
+        )
+        .await?;
+        Ok(Issue {
+            number: res["number"].as_u64().unwrap_or(0),
+            url: res["html_url"].as_str().unwrap_or_default().into(),
+        })
+    }
+
+    /// Open issues of an app (pull requests excluded).
+    pub async fn list_issues(&self, app: &str) -> Result<Vec<Value>, GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        let res = Self::send(self.req(
+            reqwest::Method::GET,
+            &format!("/repos/{}/{repo}/issues?state=open&per_page=50", self.org),
+            &token,
+        ))
+        .await?;
+        Ok(res
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i.get("pull_request").is_none())
+            .collect())
+    }
+
+    pub async fn get_issue(&self, app: &str, number: u64) -> Result<Value, GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        Self::send(self.req(
+            reqwest::Method::GET,
+            &format!("/repos/{}/{repo}/issues/{number}", self.org),
+            &token,
+        ))
+        .await
+    }
+
+    pub async fn comment_and_close(
+        &self,
+        app: &str,
+        number: u64,
+        comment: &str,
+    ) -> Result<(), GitHubError> {
+        let repo = self.repo_name(app);
+        let token = self.token(Some(&repo)).await?;
+        Self::send(
+            self.req(
+                reqwest::Method::POST,
+                &format!("/repos/{}/{repo}/issues/{number}/comments", self.org),
+                &token,
+            )
+            .json(&json!({ "body": comment })),
+        )
+        .await?;
+        Self::send(
+            self.req(
+                reqwest::Method::PATCH,
+                &format!("/repos/{}/{repo}/issues/{number}", self.org),
+                &token,
+            )
+            .json(&json!({ "state": "closed", "state_reason": "completed" })),
+        )
+        .await?;
+        Ok(())
     }
 }
