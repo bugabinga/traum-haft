@@ -172,36 +172,35 @@ curl -H 'X-User-Email: test@isp-insoft.de' -H 'X-User-Sub: 1' http://localhost:8
 Keine Reaktion nach einem Push: Ist das Repository in `isp-insoft-gmbh` und
 liegt `traum-haft.toml` auf `main`?
 
-## Agent einrichten (Claude Code & Co.)
+## Agent einrichten
 
-Die Agent-Fassung dieser Anleitung liegt unter
+Gilt für jeden Coding-Agenten. Die Agent-Fassung dieser Anleitung liegt unter
 **`https://werk.isp-insoft.de/llms-dev.txt`** (öffentlich, ohne Login). Sie
-ist immer aktuell; ein Skill, der nur darauf verweist, veraltet nie.
+ist immer aktuell; eine Anweisung, die nur darauf verweist, veraltet nie.
 
-**Einmalig, mit diesem Prompt** (in Claude Code einfügen):
+**Einmalig, mit diesem Prompt** (in den eigenen Agenten einfügen):
 
 ```text
-Lege einen persönlichen Skill für traum-haft an, damit er in allen meinen
-Repositories gilt: ~/.claude/skills/traum-haft/SKILL.md mit genau diesem
-Inhalt, ohne Ergänzungen:
+Richte dir eine dauerhafte, persönliche Anweisung für traum-haft ein, die in
+allen meinen Repositories gilt. Nimm dafür den Mechanismus, den du selbst
+für wiederverwendbare Anweisungen hast (Skill, Regel, globale
+Instruktionsdatei o. Ä.), auf Benutzerebene, nicht in diesem Repository.
 
----
-name: traum-haft
-description: Eigene App auf traum-haft werk veröffentlichen (https://<name>.werk.isp-insoft.de). Verwenden bei traum-haft, werk, traum-haft.toml, "deployen", "intern veröffentlichen", Logs oder Fehlern eines werk-Deploys.
----
+Name: traum-haft
+Wann anwenden: bei traum-haft, werk, traum-haft.toml, "deployen",
+"intern veröffentlichen", Logs oder Fehlern eines werk-Deploys.
+Inhalt, sinngemäß unverändert:
 
-Lies vor jeder Arbeit https://werk.isp-insoft.de/llms-dev.txt neu (nie aus
-dem Gedächtnis oder einer Kopie) und folge ihr. Sie ist die einzige Quelle
-für Dateien, Felder, Workflow und Fehlermeldungen. Ist sie nicht
-erreichbar, sag das und rate nicht.
+  Lies vor jeder Arbeit https://werk.isp-insoft.de/llms-dev.txt neu (nie
+  aus dem Gedächtnis oder einer Kopie) und folge ihr. Sie ist die einzige
+  Quelle für Dateien, Felder, Workflow und Fehlermeldungen. Ist sie nicht
+  erreichbar, sag das und rate nicht.
 
-Danach nichts weiter tun; zeig mir nur den Pfad der angelegten Datei.
+Kopiere nichts aus llms-dev.txt in die Anweisung. Danach nichts weiter tun;
+nenne mir nur, wo du die Anweisung abgelegt hast.
 ```
 
-Oder von Hand: die Datei `~/.claude/skills/traum-haft/SKILL.md` mit dem
-Inhalt zwischen den Zeilen `---` (einschließlich) anlegen.
+Ohne Agent-Mechanismus: `https://werk.isp-insoft.de/llms-dev.txt` zu Beginn
+einer Sitzung als Kontext geben.
 
 Danach genügt im Repository: „Mach diese App bereit für traum-haft.“
-
-Andere Agenten: `https://werk.isp-insoft.de/llms-dev.txt` als Anweisung
-oder Kontext einbinden; der Inhalt ist für jedes Modell geschrieben.
