@@ -188,63 +188,17 @@ impl ActionsBuilder {
         version: u64,
         sha: &str,
     ) -> Result<BuildOutput, String> {
-        let known: Vec<u64> = gh
-            .runs_for_commit(app, sha)
-            .await
-            .map_err(|e| e.to_string())?
-            .iter()
-            .filter_map(|r| r["id"].as_u64())
-            .collect();
-        gh.dispatch_workflow(
-            app,
+        let zip = run_workflow(
+            gh,
+            &gh.repo_name(app),
             "build.yml",
-            "main",
             &serde_json::json!({ "version": version.to_string(), "target": target }),
+            Some(sha),
+            "release",
+            self.poll,
+            self.timeout,
         )
-        .await
-        .map_err(|e| format!("could not start the build: {e}"))?;
-        let deadline = tokio::time::Instant::now() + self.timeout;
-        // Wait for the run this dispatch created.
-        let run_id = loop {
-            if tokio::time::Instant::now() > deadline {
-                return Err("the build did not start in time".into());
-            }
-            tokio::time::sleep(self.poll).await;
-            let runs = gh
-                .runs_for_commit(app, sha)
-                .await
-                .map_err(|e| e.to_string())?;
-            if let Some(id) = runs
-                .iter()
-                .filter_map(|r| r["id"].as_u64())
-                .find(|id| !known.contains(id))
-            {
-                break id;
-            }
-        };
-        let run = loop {
-            if tokio::time::Instant::now() > deadline {
-                return Err(format!("the build (run {run_id}) did not finish in time"));
-            }
-            let run = gh.run(app, run_id).await.map_err(|e| e.to_string())?;
-            if run["status"] == "completed" {
-                break run;
-            }
-            tokio::time::sleep(self.poll).await;
-        };
-        if run["conclusion"] != "success" {
-            let log = gh.failed_job_log(app, run_id).await.unwrap_or_default();
-            return Err(format!(
-                "build failed ({}): {}\n{}",
-                run["conclusion"].as_str().unwrap_or("unknown"),
-                run["html_url"].as_str().unwrap_or_default(),
-                tail(log.as_bytes(), 60)
-            ));
-        }
-        let zip = gh
-            .artifact_zip(app, run_id, "release")
-            .await
-            .map_err(|e| e.to_string())?;
+        .await?;
         std::fs::create_dir_all(&self.cache_dir).map_err(|e| e.to_string())?;
         let work = tempdir::Dir::new(&self.cache_dir, &format!("release-{target}"))
             .map_err(|e| e.to_string())?;
@@ -265,8 +219,74 @@ impl ActionsBuilder {
     }
 }
 
+/// Starts `workflow` in `repo` (on main), waits for the run it created and
+/// returns the zip of its `artifact`. Build errors carry the job log.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_workflow(
+    gh: &traum_haft_common::github::GitHubApp,
+    repo: &str,
+    workflow: &str,
+    inputs: &serde_json::Value,
+    sha: Option<&str>,
+    artifact: &str,
+    poll: Duration,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let known: Vec<u64> = gh
+        .dispatch_runs(repo, sha)
+        .await
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter_map(|r| r["id"].as_u64())
+        .collect();
+    gh.dispatch_workflow(repo, workflow, "main", inputs)
+        .await
+        .map_err(|e| format!("could not start the build: {e}"))?;
+    let deadline = tokio::time::Instant::now() + timeout;
+    // Wait for the run this dispatch created.
+    let run_id = loop {
+        if tokio::time::Instant::now() > deadline {
+            return Err("the build did not start in time".into());
+        }
+        tokio::time::sleep(poll).await;
+        let runs = gh
+            .dispatch_runs(repo, sha)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(id) = runs
+            .iter()
+            .filter_map(|r| r["id"].as_u64())
+            .find(|id| !known.contains(id))
+        {
+            break id;
+        }
+    };
+    let run = loop {
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the build (run {run_id}) did not finish in time"));
+        }
+        let run = gh.run(repo, run_id).await.map_err(|e| e.to_string())?;
+        if run["status"] == "completed" {
+            break run;
+        }
+        tokio::time::sleep(poll).await;
+    };
+    if run["conclusion"] != "success" {
+        let log = gh.failed_job_log(repo, run_id).await.unwrap_or_default();
+        return Err(format!(
+            "build failed ({}): {}\n{}",
+            run["conclusion"].as_str().unwrap_or("unknown"),
+            run["html_url"].as_str().unwrap_or_default(),
+            tail(log.as_bytes(), 60)
+        ));
+    }
+    gh.artifact_zip(repo, run_id, artifact)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Extracts a zip, refusing entries that would land outside `to`.
-fn unzip(bytes: &[u8], to: &Path) -> Result<(), String> {
+pub fn unzip(bytes: &[u8], to: &Path) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("artifact is not a zip: {e}"))?;
     for i in 0..archive.len() {

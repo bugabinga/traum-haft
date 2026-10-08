@@ -297,13 +297,12 @@ impl GitHubApp {
 
     pub async fn dispatch_workflow(
         &self,
-        app: &str,
+        repo: &str,
         workflow: &str,
         git_ref: &str,
         inputs: &Value,
     ) -> Result<(), GitHubError> {
-        let repo = self.repo_name(app);
-        let token = self.token(Some(&repo)).await?;
+        let token = self.token(Some(repo)).await?;
         Self::send(
             self.req(
                 reqwest::Method::POST,
@@ -319,15 +318,20 @@ impl GitHubApp {
         Ok(())
     }
 
-    /// Workflow runs of a commit, newest first.
-    pub async fn runs_for_commit(&self, app: &str, sha: &str) -> Result<Vec<Value>, GitHubError> {
-        let repo = self.repo_name(app);
-        let token = self.token(Some(&repo)).await?;
+    /// Recent `workflow_dispatch` runs of a repository, newest first;
+    /// optionally only those of one commit.
+    pub async fn dispatch_runs(
+        &self,
+        repo: &str,
+        sha: Option<&str>,
+    ) -> Result<Vec<Value>, GitHubError> {
+        let token = self.token(Some(repo)).await?;
         let res = Self::send(self.req(
             reqwest::Method::GET,
             &format!(
-                "/repos/{}/{repo}/actions/runs?event=workflow_dispatch&head_sha={sha}&per_page=20",
-                self.org
+                "/repos/{}/{repo}/actions/runs?event=workflow_dispatch&per_page=20{}",
+                self.org,
+                sha.map(|s| format!("&head_sha={s}")).unwrap_or_default()
             ),
             &token,
         ))
@@ -335,9 +339,8 @@ impl GitHubApp {
         Ok(res["workflow_runs"].as_array().cloned().unwrap_or_default())
     }
 
-    pub async fn run(&self, app: &str, run_id: u64) -> Result<Value, GitHubError> {
-        let repo = self.repo_name(app);
-        let token = self.token(Some(&repo)).await?;
+    pub async fn run(&self, repo: &str, run_id: u64) -> Result<Value, GitHubError> {
+        let token = self.token(Some(repo)).await?;
         Self::send(self.req(
             reqwest::Method::GET,
             &format!("/repos/{}/{repo}/actions/runs/{run_id}", self.org),
@@ -349,12 +352,11 @@ impl GitHubApp {
     /// The zip of a named artifact of a run.
     pub async fn artifact_zip(
         &self,
-        app: &str,
+        repo: &str,
         run_id: u64,
         name: &str,
     ) -> Result<Vec<u8>, GitHubError> {
-        let repo = self.repo_name(app);
-        let token = self.token(Some(&repo)).await?;
+        let token = self.token(Some(repo)).await?;
         let list = Self::send(self.req(
             reqwest::Method::GET,
             &format!("/repos/{}/{repo}/actions/runs/{run_id}/artifacts", self.org),
@@ -389,9 +391,8 @@ impl GitHubApp {
     }
 
     /// Log text of the first failed job of a run (for build errors).
-    pub async fn failed_job_log(&self, app: &str, run_id: u64) -> Result<String, GitHubError> {
-        let repo = self.repo_name(app);
-        let token = self.token(Some(&repo)).await?;
+    pub async fn failed_job_log(&self, repo: &str, run_id: u64) -> Result<String, GitHubError> {
+        let token = self.token(Some(repo)).await?;
         let jobs = Self::send(self.req(
             reqwest::Method::GET,
             &format!("/repos/{}/{repo}/actions/runs/{run_id}/jobs", self.org),
@@ -414,5 +415,84 @@ impl GitHubApp {
             .send()
             .await?;
         Ok(res.text().await.unwrap_or_default())
+    }
+
+    /// Names of all repositories the App is installed on (not archived).
+    pub async fn installed_repos(&self) -> Result<Vec<String>, GitHubError> {
+        let token = self.token(None).await?;
+        let mut out = Vec::new();
+        for page in 1..=20 {
+            let res = Self::send(self.req(
+                reqwest::Method::GET,
+                &format!("/installation/repositories?per_page=100&page={page}"),
+                &token,
+            ))
+            .await?;
+            let repos = res["repositories"].as_array().cloned().unwrap_or_default();
+            out.extend(
+                repos
+                    .iter()
+                    .filter(|r| r["archived"] != true)
+                    .filter_map(|r| r["name"].as_str().map(String::from)),
+            );
+            if repos.len() < 100 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Commit sha a branch points to.
+    pub async fn branch_head(&self, repo: &str, branch: &str) -> Result<String, GitHubError> {
+        let token = self.token(Some(repo)).await?;
+        let res = Self::send(self.req(
+            reqwest::Method::GET,
+            &format!("/repos/{}/{repo}/commits/{branch}", self.org),
+            &token,
+        ))
+        .await?;
+        res["sha"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| GitHubError::Status {
+                status: 200,
+                body: "no sha".into(),
+            })
+    }
+
+    /// A file's text at a commit, or `None` if it does not exist.
+    pub async fn file_at(
+        &self,
+        repo: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<String>, GitHubError> {
+        let token = self.token(Some(repo)).await?;
+        let res = self
+            .http
+            .get(format!(
+                "{}/repos/{}/{repo}/contents/{path}?ref={git_ref}",
+                self.api, self.org
+            ))
+            .bearer_auth(&token)
+            .header("Accept", "application/vnd.github.raw+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "traum-haft")
+            .send()
+            .await?;
+        match res.status().as_u16() {
+            404 => Ok(None),
+            200 => Ok(Some(res.text().await?)),
+            status => Err(GitHubError::Status {
+                status,
+                body: res
+                    .text()
+                    .await
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect(),
+            }),
+        }
     }
 }
