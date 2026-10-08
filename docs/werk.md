@@ -172,8 +172,36 @@ curl -H 'X-User-Email: test@isp-insoft.de' -H 'X-User-Sub: 1' http://localhost:8
 Keine Reaktion nach einem Push: Ist das Repository in `isp-insoft-gmbh` und
 liegt `traum-haft.toml` auf `main`?
 
-## Mit Claude Code
+## Agent einrichten (Claude Code & Co.)
 
 Die Agent-Fassung dieser Anleitung liegt unter
-`https://werk.isp-insoft.de/llms.txt`. Claude Code damit anweisen genügt:
-„Mach diese App bereit für traum-haft werk.“
+**`https://werk.isp-insoft.de/llms-dev.txt`** (öffentlich, ohne Login). Sie
+ist immer aktuell; ein Skill, der nur darauf verweist, veraltet nie.
+
+**Einmalig, mit diesem Prompt** (in Claude Code einfügen):
+
+```text
+Lege einen persönlichen Skill für traum-haft an, damit er in allen meinen
+Repositories gilt: ~/.claude/skills/traum-haft/SKILL.md mit genau diesem
+Inhalt, ohne Ergänzungen:
+
+---
+name: traum-haft
+description: Eigene App auf traum-haft werk veröffentlichen (https://<name>.werk.isp-insoft.de). Verwenden bei traum-haft, werk, traum-haft.toml, "deployen", "intern veröffentlichen", Logs oder Fehlern eines werk-Deploys.
+---
+
+Lies vor jeder Arbeit https://werk.isp-insoft.de/llms-dev.txt neu (nie aus
+dem Gedächtnis oder einer Kopie) und folge ihr. Sie ist die einzige Quelle
+für Dateien, Felder, Workflow und Fehlermeldungen. Ist sie nicht
+erreichbar, sag das und rate nicht.
+
+Danach nichts weiter tun; zeig mir nur den Pfad der angelegten Datei.
+```
+
+Oder von Hand: die Datei `~/.claude/skills/traum-haft/SKILL.md` mit dem
+Inhalt zwischen den Zeilen `---` (einschließlich) anlegen.
+
+Danach genügt im Repository: „Mach diese App bereit für traum-haft.“
+
+Andere Agenten: `https://werk.isp-insoft.de/llms-dev.txt` als Anweisung
+oder Kontext einbinden; der Inhalt ist für jedes Modell geschrieben.
