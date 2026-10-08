@@ -62,6 +62,16 @@ pub struct OAuth2Config {
     pub token_auth: TokenAuth,
     /// For APIs addressed per site, e.g. Atlassian's cloud id.
     pub resource_lookup: Option<ResourceLookup>,
+    /// Send a PKCE challenge (default). Off for providers that reject it.
+    #[serde(default = "yes")]
+    pub pkce: bool,
+    /// Some providers (Tempo) want `redirect_uri` on refresh too.
+    #[serde(default)]
+    pub refresh_with_redirect_uri: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,12 +99,17 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeRule {
     /// Human wording for the consent page, e.g. "lesen".
     pub label: String,
-    /// HTTP methods allowed (OAuth2 providers).
+    /// HTTP methods allowed on any path (OAuth2 providers).
     #[serde(default)]
     pub methods: Vec<String>,
+    /// Requests allowed, `"METHOD /path"`; a trailing `*` matches the rest
+    /// of the path, e.g. `"GET /4/*"`, `"POST /4/worklogs/search"`.
+    #[serde(default)]
+    pub requests: Vec<String>,
     /// Webservice operations allowed (CRM Plus).
     #[serde(default)]
     pub operations: Vec<String>,
@@ -143,5 +158,88 @@ fn resolve_env(value: &str) -> Result<String, ConfigError> {
     match value.strip_prefix("env:") {
         Some(name) => std::env::var(name).map_err(|_| ConfigError::MissingEnv(name.into())),
         None => Ok(value.into()),
+    }
+}
+
+impl ScopeRule {
+    /// Whether an OAuth2 call is allowed. `path` has no leading slash and is
+    /// already checked by [`safe_path`].
+    pub fn allows(&self, method: &str, path: &str) -> bool {
+        if self.methods.iter().any(|m| m.eq_ignore_ascii_case(method)) {
+            return true;
+        }
+        self.requests.iter().any(|r| {
+            let Some((m, pattern)) = r.split_once(' ') else {
+                return false;
+            };
+            let pattern = pattern.trim_start_matches('/');
+            m.eq_ignore_ascii_case(method)
+                && match pattern.strip_suffix('*') {
+                    Some(prefix) => path.starts_with(prefix),
+                    None => path == pattern,
+                }
+        })
+    }
+}
+
+/// An API path an app may send upstream: plain segments only, so neither
+/// `..` nor a smuggled `?`/`#` can widen what a scope rule allowed.
+pub fn safe_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.split('/').all(|seg| {
+            !seg.is_empty()
+                && seg != ".."
+                && seg != "."
+                && seg.bytes().all(|b| {
+                    b.is_ascii_alphanumeric()
+                        || matches!(
+                            b,
+                            b'-' | b'_' | b'.' | b'~' | b':' | b'@' | b',' | b'=' | b'+'
+                        )
+                })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(requests: &[&str]) -> ScopeRule {
+        ScopeRule {
+            label: String::new(),
+            methods: vec![],
+            requests: requests.iter().map(|s| s.to_string()).collect(),
+            operations: vec![],
+        }
+    }
+
+    #[test]
+    fn request_rules() {
+        let r = rule(&["GET /*", "POST /worklogs/search", "DELETE /worklogs/*"]);
+        assert!(r.allows("GET", "accounts"));
+        assert!(r.allows("post", "worklogs/search"));
+        assert!(!r.allows("POST", "worklogs/search/x"));
+        assert!(!r.allows("POST", "worklogs"));
+        assert!(r.allows("DELETE", "worklogs/7"));
+        assert!(
+            !r.allows("DELETE", "worklogsx"),
+            "prefix must stop at the slash"
+        );
+    }
+
+    #[test]
+    fn safe_paths() {
+        for ok in [
+            "worklogs",
+            "worklogs/user/557058:abc-1",
+            "rest/api/3/issue/ISP-1",
+        ] {
+            assert!(safe_path(ok), "{ok}");
+        }
+        for bad in [
+            "", "a/../b", "./a", "a?b=1", "a#x", "a b", "a%2e", "a\\b", "a//b",
+        ] {
+            assert!(!safe_path(bad), "{bad}");
+        }
     }
 }

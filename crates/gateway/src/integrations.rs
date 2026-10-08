@@ -163,10 +163,9 @@ pub async fn api(
     let conn_cfg = &integ.config.connections[&pcfg.connection];
     // 2. what the scope allows
     let allowed = match conn_cfg {
-        ConnectionConfig::Oauth2(_) => rule
-            .methods
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(method.as_str())),
+        ConnectionConfig::Oauth2(_) => {
+            crate::config::safe_path(&path) && rule.allows(method.as_str(), &path)
+        }
         ConnectionConfig::Crmplus(_) => {
             let op = path.split('/').next().unwrap_or_default();
             rule.operations.iter().any(|o| o == op)
@@ -330,12 +329,12 @@ async fn fresh_token(
         return Ok(current);
     }
     let refresh = current["refresh_token"].as_str().ok_or(())?;
-    let tokens = token_request(
-        integ,
-        cfg,
-        &[("grant_type", "refresh_token"), ("refresh_token", refresh)],
-    )
-    .await?;
+    let redirect_uri = format!("{}/oauth/{conn}/callback", integ.connect_origin);
+    let mut params = vec![("grant_type", "refresh_token"), ("refresh_token", refresh)];
+    if cfg.refresh_with_redirect_uri {
+        params.push(("redirect_uri", &redirect_uri));
+    }
+    let tokens = token_request(integ, cfg, &params).await?;
     let mut updated = current.clone();
     updated["access_token"] = tokens["access_token"].clone();
     updated["expires_at"] = json!(now() + tokens["expires_in"].as_u64().unwrap_or(3600));
@@ -693,10 +692,14 @@ pub async fn approve(
                             integ.connect_origin, pcfg.connection
                         ),
                     )
-                    .append_pair("scope", &cfg.scopes.join(" "))
-                    .append_pair("state", &state_token)
-                    .append_pair("code_challenge", &challenge)
-                    .append_pair("code_challenge_method", "S256");
+                    .append_pair("state", &state_token);
+                if !cfg.scopes.is_empty() {
+                    qp.append_pair("scope", &cfg.scopes.join(" "));
+                }
+                if cfg.pkce {
+                    qp.append_pair("code_challenge", &challenge)
+                        .append_pair("code_challenge_method", "S256");
+                }
                 for (k, v) in &cfg.authorize_params {
                     qp.append_pair(k, v);
                 }
@@ -765,18 +768,15 @@ pub async fn oauth_callback(
         return err(StatusCode::NOT_FOUND, "unknown connection");
     };
     let redirect_uri = format!("{}/oauth/{connection}/callback", integ.connect_origin);
-    let Ok(tokens) = token_request(
-        integ,
-        cfg,
-        &[
-            ("grant_type", "authorization_code"),
-            ("code", q.code.as_deref().unwrap_or_default()),
-            ("redirect_uri", &redirect_uri),
-            ("code_verifier", &p.verifier),
-        ],
-    )
-    .await
-    else {
+    let mut params = vec![
+        ("grant_type", "authorization_code"),
+        ("code", q.code.as_deref().unwrap_or_default()),
+        ("redirect_uri", &redirect_uri),
+    ];
+    if cfg.pkce {
+        params.push(("code_verifier", &p.verifier));
+    }
+    let Ok(tokens) = token_request(integ, cfg, &params).await else {
         return err(StatusCode::BAD_GATEWAY, "token exchange failed");
     };
     let mut creds = json!({

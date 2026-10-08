@@ -108,6 +108,58 @@ async fn mock_oauth(m: Arc<Mock>) -> String {
     .await
 }
 
+/// Tempo-like: no PKCE, no scopes, client secret, `redirect_uri` on refresh,
+/// rotating refresh tokens.
+async fn mock_tempo(m: Arc<Mock>) -> String {
+    async fn token(
+        AxState(m): AxState<Arc<Mock>>,
+        Form(f): Form<HashMap<String, String>>,
+    ) -> (StatusCode, Json<Value>) {
+        m.seen.lock().unwrap().push(json!(f));
+        let redirect = f.get("redirect_uri").map(String::as_str)
+            == Some("https://connect.apps.example.test/oauth/tempo/callback");
+        let ok = f.get("client_secret").map(String::as_str) == Some("tsecret")
+            && redirect
+            && !f.contains_key("code_verifier");
+        let n = *m.refresh_count.lock().unwrap();
+        let valid = match f.get("grant_type").map(String::as_str) {
+            Some("authorization_code") => f.get("code").map(String::as_str) == Some("good"),
+            Some("refresh_token") => f.get("refresh_token") == Some(&format!("trt-{}", n + 1)),
+            _ => false,
+        };
+        if !(ok && valid) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid_grant"})),
+            );
+        }
+        if f["grant_type"] == "refresh_token" {
+            *m.refresh_count.lock().unwrap() += 1;
+        }
+        let n = *m.refresh_count.lock().unwrap() + 1;
+        (
+            StatusCode::OK,
+            Json(
+                json!({"access_token": format!("tat-{n}"), "refresh_token": format!("trt-{n}"), "expires_in": 5184000, "scope": "read write"}),
+            ),
+        )
+    }
+    async fn api(req: Request<Body>) -> Json<Value> {
+        Json(json!({
+            "method": req.method().as_str(),
+            "uri": req.uri().to_string(),
+            "auth": req.headers().get("authorization").and_then(|v| v.to_str().ok()),
+        }))
+    }
+    spawn(
+        Router::new()
+            .route("/oauth/token/", post(token))
+            .route("/4/{*rest}", any(api))
+            .with_state(m),
+    )
+    .await
+}
+
 async fn mock_crm(m: Arc<Mock>) -> String {
     async fn ws_get(
         AxState(m): AxState<Arc<Mock>>,
@@ -168,6 +220,7 @@ struct H {
     store: Arc<MemoryStore>,
     oauth: Arc<Mock>,
     crm: Arc<Mock>,
+    tempo: Arc<Mock>,
     dir: tempfile::TempDir,
 }
 
@@ -176,6 +229,8 @@ async fn harness(integrations_line: &str) -> H {
     let crm = Arc::new(Mock::default());
     let oauth_url = mock_oauth(oauth.clone()).await;
     let crm_url = mock_crm(crm.clone()).await;
+    let tempo = Arc::new(Mock::default());
+    let tempo_url = mock_tempo(tempo.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     write_manifest(&dir, integrations_line);
     let providers = IntegrationsConfig::parse(&format!(
@@ -197,6 +252,25 @@ title = "Jira"
 base_url = "{oauth_url}/ex/jira/{{resource_id}}"
 scopes.read = {{ label = "lesen", methods = ["GET"] }}
 scopes.write = {{ label = "lesen und ändern", methods = ["GET", "POST", "PUT"] }}
+
+[connections.tempo]
+kind = "oauth2"
+title = "Tempo"
+authorize_url = "{tempo_url}/oauth/authorize/redirect"
+token_url = "{tempo_url}/oauth/token/"
+client_id = "tcid"
+client_secret = "tsecret"
+scopes = []
+pkce = false
+refresh_with_redirect_uri = true
+authorize_params = {{ jira_url = "https://isp.atlassian.net" }}
+
+[providers.tempo]
+connection = "tempo"
+title = "Tempo"
+base_url = "{tempo_url}/4"
+scopes.read = {{ label = "lesen", requests = ["GET /*", "POST /worklogs/search", "POST /plans/search", "POST /accounts/search"] }}
+scopes.worklogs = {{ label = "lesen und eigene Zeiten buchen", requests = ["GET /*", "POST /worklogs/search", "POST /worklogs", "PUT /worklogs/*", "DELETE /worklogs/*"] }}
 
 [connections.crm]
 kind = "crmplus"
@@ -234,6 +308,7 @@ scopes.read = {{ label = "lesen", operations = ["query", "retrieve", "describe"]
         store,
         oauth,
         crm,
+        tempo,
         dir,
     }
 }
@@ -614,4 +689,123 @@ async fn crm_key_flow_and_operation_allowlist() {
         .await;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{op}");
     }
+}
+
+async fn connect_tempo(h: &H, sub: &str) {
+    let r = send(
+        h,
+        connect_req("POST", "/c/tempo/approve", sub)
+            .header("content-type", FORM)
+            .body(Body::from(RET))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.text);
+    let auth = url::Url::parse(&r.location()).unwrap();
+    let q: HashMap<_, _> = auth.query_pairs().into_owned().collect();
+    assert!(!q.contains_key("code_challenge"), "PKCE sent: {q:?}");
+    assert!(!q.contains_key("scope"), "empty scope sent: {q:?}");
+    assert_eq!(q["jira_url"], "https://isp.atlassian.net");
+    let cb = format!("/oauth/tempo/callback?code=good&state={}", q["state"]);
+    let r = send(h, connect_req("GET", &cb, sub).body(Body::empty()).unwrap()).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.text);
+}
+
+#[tokio::test]
+async fn tempo_read_scope_allows_search_but_not_writes() {
+    let h = harness(r#"integrations = ["tempo:read"]"#).await;
+    connect_tempo(&h, "alice").await;
+    for (m, path, ok) in [
+        (
+            "GET",
+            "worklogs/user/acc-1?from=2026-10-01&to=2026-10-31",
+            true,
+        ),
+        ("POST", "worklogs/search", true),
+        ("POST", "worklogs", false),
+        ("DELETE", "worklogs/7", false),
+        ("POST", "timesheet-approvals/user/acc-1/approve", false),
+        (
+            "POST",
+            "worklogs/search/../../timesheet-approvals/user/x/approve",
+            false,
+        ),
+        ("POST", "worklogs/search%3Fx=1", false),
+    ] {
+        let r = send(
+            &h,
+            app_req(m, &format!("/_api/tempo/{path}"), "alice")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            r.status == StatusCode::OK,
+            ok,
+            "{m} {path}: {} {}",
+            r.status,
+            r.text
+        );
+        if ok {
+            assert_eq!(r.json()["auth"], "Bearer tat-1");
+        }
+    }
+}
+
+#[tokio::test]
+async fn tempo_worklogs_scope_books_time_only() {
+    let h = harness(r#"integrations = ["tempo:worklogs"]"#).await;
+    connect_tempo(&h, "alice").await;
+    for (m, path, ok) in [
+        ("POST", "worklogs", true),
+        ("PUT", "worklogs/7", true),
+        ("DELETE", "worklogs/7", true),
+        ("POST", "timesheet-approvals/user/acc-1/submit", false),
+        ("DELETE", "accounts/A1", false),
+    ] {
+        let r = send(
+            &h,
+            app_req(m, &format!("/_api/tempo/{path}"), "alice")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status == StatusCode::OK, ok, "{m} {path}: {}", r.status);
+    }
+}
+
+#[tokio::test]
+async fn tempo_refresh_sends_redirect_uri_and_keeps_rotation() {
+    let h = harness(r#"integrations = ["tempo:read"]"#).await;
+    connect_tempo(&h, "alice").await;
+    let mut creds = h
+        .store
+        .get("users/alice/connections/tempo")
+        .await
+        .unwrap()
+        .unwrap();
+    creds["expires_at"] = json!(1);
+    h.store
+        .put("users/alice/connections/tempo", &creds)
+        .await
+        .unwrap();
+    let r = send(
+        &h,
+        app_req("GET", "/_api/tempo/worklogs", "alice")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(r.json()["auth"], "Bearer tat-2", "{}", r.text);
+    let stored = h
+        .store
+        .get("users/alice/connections/tempo")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored["refresh_token"], "trt-2");
+    let seen = h.tempo.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[1]["grant_type"], "refresh_token");
+    assert!(seen.iter().all(|f| f.get("code_verifier").is_none()));
 }
