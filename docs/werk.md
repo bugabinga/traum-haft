@@ -58,7 +58,7 @@ on:
       version: { required: true }
 jobs:
   build:
-    uses: bugabinga/traum-haft/.github/workflows/build-container.yml@main
+    uses: isp-insoft-gmbh/traum-haft/.github/workflows/build-container.yml@main
     with:
       sha: ${{ inputs.sha }}
       version: ${{ inputs.version }}
