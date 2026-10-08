@@ -1,0 +1,6 @@
+FROM public.ecr.aws/docker/library/python:3.13-alpine
+ARG APP_VERSION=1
+ARG BROKEN=
+ENV APP_VERSION=$APP_VERSION BROKEN=$BROKEN
+COPY app.py /app.py
+CMD ["python", "/app.py"]

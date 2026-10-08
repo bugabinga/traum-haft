@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/common", "crates/gateway", "crates/mcp", "crates/traum-haft-module"]
+members = ["crates/common", "crates/gateway", "crates/mcp", "crates/runner", "crates/traum-haft-module"]
 exclude = ["tests/identity/whoami"]
 
 [workspace.package]
