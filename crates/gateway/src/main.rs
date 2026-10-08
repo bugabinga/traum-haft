@@ -29,6 +29,9 @@ async fn main() -> Result<(), String> {
         issuer: std::env::var("GATEWAY_ISSUER")
             .unwrap_or_else(|_| format!("https://{apps_domain}")),
         apps_domain,
+        werk_domain: std::env::var("GATEWAY_WERK_DOMAIN")
+            .ok()
+            .filter(|s| !s.is_empty()),
         apps_dir: PathBuf::from(
             std::env::var("GATEWAY_APPS_DIR").unwrap_or_else(|_| "/srv/apps".into()),
         ),

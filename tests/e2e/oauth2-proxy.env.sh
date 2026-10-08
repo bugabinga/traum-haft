@@ -1,5 +1,6 @@
 # oauth2-proxy settings for the e2e run. Mirrors locals.oauth2_proxy_env and
-# locals.oauth2_proxy_connect_env in isp-insoft-cloud/modules/traum-haft;
+# locals.oauth2_proxy_connect_env and locals.oauth2_proxy_werk_env in
+# isp-insoft-cloud/modules/traum-haft;
 # only issuer, client and addresses differ.
 common() {
   export OAUTH2_PROXY_PROVIDER=oidc
@@ -35,4 +36,12 @@ connect_proxy() {
   export OAUTH2_PROXY_COOKIE_NAME=__Host-traum-haft-connect
   export OAUTH2_PROXY_WHITELIST_DOMAINS=connect.apps.isp-insoft.de
   export OAUTH2_PROXY_REDIRECT_URL=https://connect.apps.isp-insoft.de/oauth2/callback
+}
+werk_proxy() {
+  common
+  export OAUTH2_PROXY_HTTP_ADDRESS=127.0.0.7:4180
+  export OAUTH2_PROXY_COOKIE_NAME=_th_werk
+  export OAUTH2_PROXY_COOKIE_DOMAINS=.werk.isp-insoft.de
+  export OAUTH2_PROXY_WHITELIST_DOMAINS=.werk.isp-insoft.de
+  export OAUTH2_PROXY_REDIRECT_URL=https://werk.isp-insoft.de/oauth2/callback
 }

@@ -7,6 +7,8 @@ pub mod oauth;
 pub mod rpc;
 pub mod stdb;
 pub mod tools;
+pub mod werk;
+pub mod werk_page;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,6 +40,10 @@ pub struct AppState {
     pub mailer: Option<Mailer>,
     /// Google accounts of the triage routine.
     pub platform_agents: Vec<String>,
+    /// Developer apps; off unless a worker is configured.
+    pub werk: Option<werk::Werk>,
+    /// Sent by the edge on routes that carry identity headers (logs page).
+    pub edge_secret: Option<String>,
     locks: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -77,6 +83,8 @@ impl AppState {
             platform_repo,
             mailer,
             platform_agents,
+            werk: None,
+            edge_secret: None,
             locks: Default::default(),
         }
     }
@@ -135,5 +143,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/login/callback", get(oauth::login_callback))
         .route("/token", post(oauth::token))
         .route("/mcp", post(rpc::post).get(rpc::get))
+        .route("/werk/logs/{app}", get(werk_page::logs))
+        .route("/werk/docs/", get(werk_page::docs))
+        .route("/werk/docs/{*path}", get(werk_page::docs))
         .with_state(state)
 }

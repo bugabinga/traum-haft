@@ -101,7 +101,7 @@ async fn main() -> Result<(), String> {
         .filter(|s| !s.is_empty())
         .map(String::from)
         .collect();
-    let state = AppState::new(
+    let mut state = AppState::new(
         apps_domain,
         data_dir,
         key,
@@ -124,6 +124,40 @@ async fn main() -> Result<(), String> {
         agents,
     );
 
+    // Developer apps (werk): on when a worker is configured.
+    if let Ok(runner_url) = std::env::var("MCP_RUNNER_URL") {
+        let deployer = GitHubApp::new(
+            &env_or("MCP_GITHUB_API", "https://api.github.com"),
+            &env("MCP_GITHUB_ORG")?,
+            "",
+            &env("MCP_DEPLOY_GITHUB_APP_ID")?,
+            &std::fs::read_to_string(env("MCP_DEPLOY_GITHUB_KEY_FILE")?)
+                .map_err(|e| e.to_string())?,
+            http.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        let secs = |name: &str, default: u64| {
+            std::time::Duration::from_secs(
+                env_or(name, &default.to_string())
+                    .parse()
+                    .unwrap_or(default),
+            )
+        };
+        state.werk = Some(traum_haft_mcp::werk::Werk::new(
+            deployer,
+            runner_url,
+            env("MCP_RUNNER_TOKEN")?,
+            env("MCP_WERK_DOMAIN")?,
+            env("MCP_ALLOWED_DOMAIN")?,
+            secs("MCP_WERK_POLL_SECS", 60),
+            secs("MCP_BUILD_POLL_SECS", 5),
+            secs("MCP_WERK_BUILD_TIMEOUT_SECS", 30 * 60),
+            &state.data_dir,
+            http.clone(),
+        ));
+        state.edge_secret = Some(env("MCP_EDGE_SECRET")?);
+    }
+
     let listen: SocketAddr = env_or("MCP_LISTEN", "0.0.0.0:8080")
         .parse()
         .map_err(|e| format!("MCP_LISTEN: {e}"))?;
@@ -131,7 +165,9 @@ async fn main() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|e| e.to_string())?;
-    axum::serve(listener, router(Arc::new(state)))
+    let state = Arc::new(state);
+    tokio::spawn(traum_haft_mcp::werk::run(state.clone()));
+    axum::serve(listener, router(state))
         .with_graceful_shutdown(traum_haft_common::shutdown::signal())
         .await
         .map_err(|e| e.to_string())

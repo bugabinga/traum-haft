@@ -56,12 +56,14 @@ on:
     inputs:
       sha: { required: true }
       version: { required: true }
+      recipient: { required: true }
 jobs:
   build:
     uses: isp-insoft-gmbh/traum-haft/.github/workflows/build-container.yml@main
     with:
       sha: ${{ inputs.sha }}
       version: ${{ inputs.version }}
+      recipient: ${{ inputs.recipient }}
     secrets: inherit
 ```
 
@@ -90,6 +92,11 @@ steht in den Headern:
 
 Den Headern ist zu trauen: Die App ist nur über den Plattform-Eingang
 erreichbar, der sie setzt und vom Browser gesendete überschreibt.
+
+Das Anmelde-Cookie der Plattform erreicht die App nicht; eigene Cookies
+funktionieren normal. Andere werk-Apps liegen unter derselben Domain: bei
+ändernden Anfragen (POST, PUT, DELETE) prüfen, dass der `Origin`-Header
+gleich `TRAUM_HAFT_URL` ist.
 
 **Umgebungsvariablen**
 

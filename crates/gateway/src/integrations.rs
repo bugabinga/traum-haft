@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{ConnectionConfig, CrmPlusConfig, IntegrationsConfig, OAuth2Config, TokenAuth};
 use crate::store::SecretStore;
-use crate::{AppState, now, visitor};
+use crate::{AppState, now};
 
 pub struct Integrations {
     pub config: IntegrationsConfig,
@@ -118,7 +118,7 @@ pub fn declared_scope(apps_dir: &std::path::Path, app: &str, provider: &str) -> 
 }
 
 fn app_origin(state: &AppState, app: &str) -> String {
-    format!("https://{app}.{}", state.config.apps_domain)
+    format!("https://{}", state.config.app_host(app))
 }
 
 fn connect_url(state: &AppState, provider: &str, app: &str) -> String {
@@ -144,7 +144,7 @@ pub async fn api(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(v) = visitor(&headers) else {
+    let Some(v) = crate::visitor_at(&state.config, &headers) else {
         return err(StatusCode::UNAUTHORIZED, "not signed in");
     };
     if provider == "_platform" {

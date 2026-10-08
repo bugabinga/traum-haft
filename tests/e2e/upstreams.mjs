@@ -13,13 +13,32 @@ const port = Number(process.argv[2] ?? 39400);
 const smtpPort = Number(process.argv[3] ?? 39425);
 const base = `http://127.0.0.1:${port}`;
 const blobBase = `http://127.0.0.8:${port}`;
-const seen = { jira: [], crm: [], issues: [], fires: [], mails: [], comments: [], repos: [], dispatches: [] };
+const seen = { jira: [], crm: [], issues: [], fires: [], mails: [], comments: [], repos: [], dispatches: [], statuses: [] };
 // GitHub repositories are bare repos here; Actions runs live in runs/<id>/.
 const ghDir = process.env.GITHUB_DIR;
 const runner = join(dirname(fileURLToPath(import.meta.url)), "fake-actions.py");
 const runDir = (id) => join(ghDir, "runs", String(id));
 const runOf = (id) => existsSync(join(runDir(id), "run.json")) ? JSON.parse(readFileSync(join(runDir(id), "run.json"), "utf8")) : null;
 let nextRun = 1;
+// Two GitHub Apps, as GitHub enforces them: the writer (App id 1) is
+// installed on "only select repositories", i.e. those it created; the
+// deployer (App id 2) on all repositories, read-only plus dispatch/statuses.
+const TOKENS = { 1: "ghs_e2e", 2: "ghs_deploy" };
+const writerRepos = new Set();
+const bareRepos = () => existsSync(ghDir) ? readdirSync(ghDir).filter((f) => f.endsWith(".git")).map((f) => f.slice(0, -4)) : [];
+const jwtApp = (auth) => { try { return JSON.parse(Buffer.from(auth.split(" ")[1].split(".")[1], "base64url")).iss; } catch { return null; } };
+const git = (repo, ...args) => execFileSync("git", ["-C", join(ghDir, `${repo}.git`), ...args], { stdio: ["ignore", "pipe", "pipe"] }).toString();
+// pushed_at changes with every push (commit time + a bit of the sha, as
+// several pushes can land within one second).
+const repoInfo = (name) => {
+  let pushed_at = "";
+  try {
+    const sha = git(name, "rev-parse", "--verify", "-q", "main^{commit}").trim();
+    const t = Number(git(name, "log", "-1", "--format=%ct", sha).trim());
+    pushed_at = new Date(t * 1000 + (parseInt(sha.slice(0, 6), 16) % 1000)).toISOString();
+  } catch { /* empty repository */ }
+  return { name, archived: false, pushed_at };
+};
 const codes = new Map();
 
 const send = (res, status, obj, type = "application/json") => {
@@ -69,16 +88,52 @@ const handler = async (req, res) => {
     return send(res, 200, { success: false, error: { code: "INVALID_SESSIONID", message: "no" } });
   }
   // GitHub App API
-  if (p.match(/^\/github\/orgs\/[^/]+\/installation$/)) return send(res, 200, { id: 1 });
-  if (p.match(/^\/github\/app\/installations\/\d+\/access_tokens$/)) return send(res, 201, { token: "ghs_e2e" });
+  if (p.match(/^\/github\/orgs\/[^/]+\/installation$/)) return send(res, 200, { id: Number(jwtApp(req.headers.authorization ?? "")) || 0 });
+  const tok = p.match(/^\/github\/app\/installations\/(\d+)\/access_tokens$/);
+  if (tok) {
+    if (String(jwtApp(req.headers.authorization ?? "")) !== tok[1] || !TOKENS[tok[1]]) return send(res, 401, { message: "Bad credentials" });
+    return send(res, 201, { token: TOKENS[tok[1]] });
+  }
   const auth = req.headers.authorization ?? "";
-  if (p.startsWith("/github/repos/") && auth !== "Bearer ghs_e2e" && !p.includes("/_blob/")) return send(res, 401, { message: "Bad credentials" });
+  const asWriter = auth === "Bearer ghs_e2e", asDeployer = auth === "Bearer ghs_deploy";
+  if (p === "/github/installation/repositories") {
+    if (!asWriter && !asDeployer) return send(res, 401, { message: "Bad credentials" });
+    const names = bareRepos().filter((r) => asDeployer || writerRepos.has(r));
+    return send(res, 200, { total_count: names.length, repositories: names.map(repoInfo) });
+  }
+  const scoped = p.match(/^\/github\/repos\/[^/]+\/([^/]+)\//);
+  if (scoped && !p.includes("/_blob/")) {
+    const r = scoped[1];
+    if (!asWriter && !asDeployer) return send(res, 401, { message: "Bad credentials" });
+    // Writer: only repos it created (issue tests use app repos without a bare repo).
+    if (asWriter && bareRepos().includes(r) && !writerRepos.has(r)) return send(res, 404, { message: "Not Found" });
+    const deployerMay = req.method === "GET" || p.endsWith("/dispatches") || /\/statuses\/[0-9a-f]+$/.test(p);
+    if (asDeployer && !deployerMay) return send(res, 403, { message: "Resource not accessible by integration" });
+  }
+  const commit = p.match(/^\/github\/repos\/[^/]+\/([^/]+)\/commits\/([\w.-]+)$/);
+  if (commit) {
+    try { return send(res, 200, { sha: git(commit[1], "rev-parse", `${commit[2]}^{commit}`).trim() }); }
+    catch { return send(res, 404, { message: "Not Found" }); }
+  }
+  const content = p.match(/^\/github\/repos\/[^/]+\/([^/]+)\/contents\/(.+)$/);
+  if (content) {
+    try { return send(res, 200, git(content[1], "show", `${url.searchParams.get("ref") ?? "main"}:${decodeURIComponent(content[2])}`), "application/vnd.github.raw"); }
+    catch { return send(res, 404, { message: "Not Found" }); }
+  }
+  const status = p.match(/^\/github\/repos\/[^/]+\/([^/]+)\/statuses\/([0-9a-f]+)$/);
+  if (status && req.method === "POST") {
+    seen.statuses.push({ repo: status[1], sha: status[2], ...JSON.parse(await body(req)) });
+    return send(res, 201, {});
+  }
   const newRepo = p.match(/^\/github\/orgs\/([^/]+)\/repos$/);
   if (newRepo && req.method === "POST") {
     const b = JSON.parse(await body(req));
     const bare = join(ghDir, `${b.name}.git`);
+    if (!asWriter) return send(res, 403, { message: "Resource not accessible by integration" });
     if (existsSync(bare)) return send(res, 422, { message: "Repository creation failed.", errors: [{ message: "name already exists on this account" }] });
     execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare]);
+    // GitHub docs: an App on "only select repositories" gets the repos it creates.
+    writerRepos.add(b.name);
     seen.repos.push({ org: newRepo[1], ...b });
     return send(res, 201, { name: b.name, private: b.private });
   }
@@ -91,14 +146,15 @@ const handler = async (req, res) => {
     if ((m = rest.match(/^workflows\/([\w.-]+)\/dispatches$/)) && req.method === "POST") {
       const b = JSON.parse(await body(req));
       seen.dispatches.push({ repo, workflow: m[1], ...b });
-      if (m[1] !== "build.yml" || b.ref !== "main") return send(res, 404, { message: "Not Found" });
-      try { execFileSync("python3", [runner, "check", bare, JSON.stringify(b.inputs ?? {})], { stdio: "pipe" }); }
+      try { git(repo, "cat-file", "-e", `main:.github/workflows/${m[1]}`); } catch { return send(res, 404, { message: "Not Found" }); }
+      if (b.ref !== "main") return send(res, 422, { message: "No ref found" });
+      try { execFileSync("python3", [runner, "check", bare, m[1], JSON.stringify(b.inputs ?? {})], { stdio: "pipe" }); }
       catch (e) { return send(res, 422, { message: String(e.stderr).trim() }); }
       const id = nextRun++;
       const head_sha = execFileSync("git", ["-C", bare, "rev-parse", "main"]).toString().trim();
       mkdirSync(runDir(id), { recursive: true });
       writeFileSync(join(runDir(id), "run.json"), JSON.stringify({ id, repo, head_sha, event: "workflow_dispatch", status: "queued", conclusion: null, html_url: `https://github.example/${repo}/actions/runs/${id}` }));
-      spawn("python3", [runner, "run", bare, JSON.stringify(b.inputs), runDir(id), join(ghDir, "cache")], { stdio: "ignore" });
+      spawn("python3", [runner, "run", bare, m[1], JSON.stringify(b.inputs), runDir(id), join(ghDir, "cache"), join(ghDir, "secrets", `${repo}.json`)], { stdio: "ignore" });
       res.writeHead(204); return res.end();
     }
     if (rest === "runs") {
@@ -155,9 +211,14 @@ const handler = async (req, res) => {
   }
   send(res, 404, { error: "not mocked", path: p });
 };
-createServer(handler).listen(port, "127.0.0.1", () => console.log(`upstreams on ${base}`));
+// One bad request must not take the mock down (and every later test with it).
+const safe = (req, res) => handler(req, res).catch((e) => {
+  console.error(`${req.method} ${req.url}: ${e.stack ?? e}`);
+  if (!res.headersSent) send(res, 500, { message: String(e) });
+});
+createServer(safe).listen(port, "127.0.0.1", () => console.log(`upstreams on ${base}`));
 // Second origin, standing in for GitHub's blob storage.
-createServer(handler).listen(port, "127.0.0.8");
+createServer(safe).listen(port, "127.0.0.8");
 
 tcp((sock) => {
   let data = null, buf = "";

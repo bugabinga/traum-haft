@@ -35,6 +35,25 @@ pub struct Config {
     /// Directory with one folder per deployed app.
     pub apps_dir: PathBuf,
     pub token_ttl_secs: u64,
+    /// e.g. `werk.isp-insoft.de`: developer apps live at `<app>.<werk_domain>`.
+    pub werk_domain: Option<String>,
+}
+
+impl Config {
+    /// A developer app: the platform MCP wrote its marker next to `current`.
+    pub fn is_dev_app(&self, app: &str) -> bool {
+        self.werk_domain.is_some()
+            && is_valid_app_name(app)
+            && self.apps_dir.join(app).join("werk.json").is_file()
+    }
+
+    /// The one origin an app is served from; each kind on its own domain.
+    pub fn app_host(&self, app: &str) -> String {
+        match &self.werk_domain {
+            Some(w) if self.is_dev_app(app) => format!("{app}.{w}"),
+            _ => format!("{app}.{}", self.apps_domain),
+        }
+    }
 }
 
 pub struct AppState {
@@ -109,6 +128,25 @@ pub struct Visitor {
     pub app: String,
 }
 
+/// The visitor, if the request also came in on the app's own host: a user
+/// app's name under the werk domain (or the reverse) is refused.
+pub fn visitor_at(config: &Config, headers: &HeaderMap) -> Option<Visitor> {
+    let v = visitor(headers)?;
+    if let Some(host) = headers.get("host").and_then(|h| h.to_str().ok()) {
+        let host = host.rsplit_once(':').map_or(host, |(h, p)| {
+            if p.bytes().all(|b| b.is_ascii_digit()) {
+                h
+            } else {
+                host
+            }
+        });
+        if !host.eq_ignore_ascii_case(&config.app_host(&v.app)) {
+            return None;
+        }
+    }
+    Some(v)
+}
+
 pub fn visitor(headers: &HeaderMap) -> Option<Visitor> {
     let get = |name: &str| {
         headers
@@ -135,7 +173,7 @@ pub fn now() -> u64 {
 /// `GET /_auth/token` on an app origin: a short-lived token for this visitor
 /// and this app, used by the frontend as the SpacetimeDB token.
 async fn issue_token(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let Some(v) = visitor(&headers) else {
+    let Some(v) = visitor_at(&state.config, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if !is_valid_app_name(&v.app) {
@@ -168,7 +206,7 @@ async fn issue_token(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
 /// `forward_auth` target for the SpacetimeDB token exchange. Passes only a
 /// bearer that this gateway signed, for this app (aud) and this visitor (sub).
 async fn verify_stdb_token(State(state): State<Arc<AppState>>, headers: HeaderMap) -> StatusCode {
-    let Some(v) = visitor(&headers) else {
+    let Some(v) = visitor_at(&state.config, &headers) else {
         return StatusCode::UNAUTHORIZED;
     };
     let Some(token) = headers
@@ -200,12 +238,27 @@ struct TlsAsk {
 
 /// Caddy's on-demand TLS `ask`: a certificate only for deployed apps.
 async fn tls_ask(State(state): State<Arc<AppState>>, Query(q): Query<TlsAsk>) -> StatusCode {
-    let suffix = format!(".{}", state.config.apps_domain);
+    let c = &state.config;
+    if c.werk_domain.as_deref() == Some(q.domain.as_str()) {
+        return StatusCode::OK;
+    }
+    let werk_app = c
+        .werk_domain
+        .as_ref()
+        .and_then(|w| q.domain.strip_suffix(&format!(".{w}")));
+    if let Some(name) = werk_app {
+        return if c.is_dev_app(name) {
+            StatusCode::OK
+        } else {
+            StatusCode::NOT_FOUND
+        };
+    }
+    let suffix = format!(".{}", c.apps_domain);
     let Some(name) = q.domain.strip_suffix(&suffix) else {
         return StatusCode::NOT_FOUND;
     };
     if PLATFORM_HOSTS.contains(&name)
-        || (is_valid_app_name(name) && state.config.apps_dir.join(name).is_dir())
+        || (is_valid_app_name(name) && c.apps_dir.join(name).is_dir() && !c.is_dev_app(name))
     {
         StatusCode::OK
     } else {

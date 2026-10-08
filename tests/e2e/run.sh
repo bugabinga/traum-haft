@@ -17,7 +17,9 @@ infra="${INFRA_REPO:-$root/../isp-insoft-cloud}"
 stdb_bin="${SPACETIME_BIN:?}"; o2p="${OAUTH2_PROXY:?}"; caddy="${CADDY:-caddy}"
 work="$(mktemp -d)"
 pids=()
-cleanup() { kill "${pids[@]}" 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $work" || rm -rf "$work"; }
+cleanup() {
+  podman ps -a --filter label=traum-haft.app -q | xargs -r podman rm -f >/dev/null 2>&1 || true
+  kill "${pids[@]}" 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $work" || rm -rf "$work"; }
 trap cleanup EXIT
 bg() { local log="$1"; shift; "$@" > "$work/$log.log" 2>&1 & pids+=($!); }
 wait_for() { for _ in $(seq 1 60); do curl -sk -o /dev/null "$1" && return 0; sleep 0.5; done; echo "timeout: $1"; exit 1; }
@@ -40,6 +42,7 @@ wait_for "$MOCK_GOOGLE/.well-known/openid-configuration"
 # shellcheck source=oauth2-proxy.env.sh
 (source "$here/oauth2-proxy.env.sh"; apps_proxy; exec "$o2p") > "$work/oauth2-proxy.log" 2>&1 & pids+=($!)
 (source "$here/oauth2-proxy.env.sh"; connect_proxy; exec "$o2p") > "$work/oauth2-proxy-connect.log" 2>&1 & pids+=($!)
+(source "$here/oauth2-proxy.env.sh"; werk_proxy; exec "$o2p") > "$work/oauth2-proxy-werk.log" 2>&1 & pids+=($!)
 
 mkdir -p "$work/stdb/keys"
 openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -out "$work/stdb/keys/id_ecdsa" 2>/dev/null
@@ -51,6 +54,16 @@ mkdir -p "$work/github"
 GITHUB_DIR="$work/github" SPACETIME_BIN="$stdb_bin" bg upstreams node "$here/upstreams.mjs" 39400 39425
 wait_for http://127.0.0.1:39400/_seen
 openssl genrsa -out "$work/github-app.pem" 2048 2>/dev/null
+openssl genrsa -out "$work/github-deploy.pem" 2048 2>/dev/null
+
+echo "== werk worker (runner + its Caddy)"
+export EDGE_SECRET=e2e-edge-secret-0123456789abcdef0123 RUNNER_TOKEN=e2e-runner-token-0123456789abcdef0123
+echo '{"admin":{"listen":"127.0.0.13:2019","origins":["127.0.0.13:2019"]}}' > "$work/worker-caddy.json"
+bg worker-caddy "$caddy" run --config "$work/worker-caddy.json"
+(cd "$root" && cargo build -q --release -p traum-haft-runner)
+RUNNER_TOKEN=$RUNNER_TOKEN RUNNER_EDGE_SECRET=$EDGE_SECRET RUNNER_DATA_DIR="$work/werk" RUNNER_DOMAIN=werk.isp-insoft.de \
+  RUNNER_CADDY_ADMIN=http://127.0.0.13:2019 RUNNER_PROXY_LISTEN=127.0.0.13:8080 RUNNER_LISTEN=127.0.0.13:9000 \
+  RUNNER_HEALTH_TIMEOUT_SECS=20 RUST_LOG=info bg runner "$root/target/release/traum-haft-runner"
 
 (cd "$root" && cargo build -q --release -p traum-haft-gateway)
 GATEWAY_STORE=memory GATEWAY_PROVIDERS="$here/providers.toml" \
@@ -59,11 +72,12 @@ GATEWAY_STORE=memory GATEWAY_PROVIDERS="$here/providers.toml" \
   GATEWAY_ROUTINE_URL=http://127.0.0.1:39400/routine/fire GATEWAY_ROUTINE_TOKEN=routine-e2e \
   GATEWAY_SMTP_URL=smtp://127.0.0.1:39425 GATEWAY_MAIL_FROM="traum-haft <traum-haft@isp-insoft.de>" \
   GATEWAY_APPS_DOMAIN=apps.isp-insoft.de GATEWAY_ISSUER="$issuer" GATEWAY_APPS_DIR="$work/apps" \
-  GATEWAY_KEY_FILE="$work/gateway-key.pem" GATEWAY_LISTEN=127.0.0.2:8080 \
+  GATEWAY_KEY_FILE="$work/gateway-key.pem" GATEWAY_LISTEN=127.0.0.2:8080 GATEWAY_WERK_DOMAIN=werk.isp-insoft.de \
   bg gateway "$root/target/release/traum-haft-gateway"
 wait_for http://127.0.0.4:3000/v1/ping
 wait_for http://127.0.0.3:4180/ping
 wait_for http://127.0.0.6:4180/ping
+wait_for http://127.0.0.7:4180/ping
 wait_for "$issuer/.well-known/jwks.json"
 
 echo "== build and publish the template as apps 'notes' and 'other'"
@@ -91,11 +105,13 @@ MCP_APPS_DOMAIN=apps.isp-insoft.de MCP_ORIGIN=https://mcp.apps.isp-insoft.de MCP
   MCP_GITHUB_API=http://127.0.0.1:39400/github MCP_GITHUB_ORG=isp-insoft-gmbh MCP_GITHUB_APP_ID=1 MCP_GITHUB_KEY_FILE="$work/github-app.pem" \
   MCP_SMTP_URL=smtp://127.0.0.1:39425 MCP_MAIL_FROM="traum-haft <traum-haft@isp-insoft.de>" \
   MCP_BUILDER=actions MCP_GIT_REMOTE="file://$work/github/{repo}.git" MCP_BUILD_POLL_SECS=1 MCP_DEPLOY_WAIT_SECS="${DEPLOY_WAIT:-20}" \
+  MCP_RUNNER_URL=http://127.0.0.13:9000 MCP_RUNNER_TOKEN=$RUNNER_TOKEN MCP_EDGE_SECRET=$EDGE_SECRET MCP_WERK_DOMAIN=werk.isp-insoft.de \
+  MCP_DEPLOY_GITHUB_APP_ID=2 MCP_DEPLOY_GITHUB_KEY_FILE="$work/github-deploy.pem" MCP_WERK_POLL_SECS=2 \
   bg mcp "$root/target/release/traum-haft-mcp"
 wait_for http://127.0.0.5:8080/.well-known/oauth-authorization-server
 
 echo "== edge"
-bg caddy "$caddy" run --config "$work/Caddyfile" --adapter caddyfile
+TRAUM_HAFT_EDGE_SECRET=$EDGE_SECRET bg caddy "$caddy" run --config "$work/Caddyfile" --adapter caddyfile
 for _ in $(seq 1 60); do
   curl -sk -o /dev/null --resolve apps.isp-insoft.de:443:127.0.0.1 https://apps.isp-insoft.de/llms.txt && break; sleep 0.5
 done
@@ -113,3 +129,8 @@ PLAYWRIGHT_ROOT="$(npm root -g)" env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY
 
 echo "== auto-triage (as the routine)"
 env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy node "$here/triage.mjs"
+
+echo "== werk (developer apps)"
+GITHUB_DIR="$work/github" APPS_DIR="$work/apps" PLAYWRIGHT_ROOT="$(npm root -g)" \
+  env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  node "$here/werk.mjs" "$root/tests/werk/app"

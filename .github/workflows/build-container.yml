@@ -1,0 +1,73 @@
+# Builds one developer app (werk): the repository's Containerfile (or
+# Dockerfile) at the commit the platform asks for, plus the secrets listed
+# in traum-haft.toml, encrypted for the worker. Called from each app
+# repository's .github/workflows/traum-haft.yml with `secrets: inherit`.
+# The platform downloads the "image" artifact; no secret leaves this job
+# unencrypted.
+name: build-container
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit to build
+        type: string
+        required: true
+      version:
+        description: Release number
+        type: string
+        required: true
+      recipient:
+        description: age public key of the worker
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Image
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          file=Containerfile
+          [ -f "$file" ] || file=Dockerfile
+          [ -f "$file" ] || { echo "::error::Weder Containerfile noch Dockerfile gefunden"; exit 1; }
+          docker build --pull -f "$file" --label "traum-haft.version=$VERSION" -t traum-haft-app:build .
+          mkdir -p out
+          docker save -o out/image.tar traum-haft-app:build
+
+      - name: Secrets
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          RECIPIENT: ${{ inputs.recipient }}
+        run: |
+          wanted=$(python3 -c 'import tomllib; print(" ".join(tomllib.load(open("traum-haft.toml","rb")).get("secrets", [])))')
+          [ -n "$wanted" ] || exit 0
+          command -v age >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq age; }
+          # Only the listed secrets, straight into age; nothing is written in plain text.
+          python3 - "$wanted" <<'PY' | age -r "$RECIPIENT" -o out/secrets.age
+          import json, os, sys
+          wanted = sys.argv[1].split()
+          have = json.loads(os.environ["ALL_SECRETS"])
+          missing = [n for n in wanted if n not in have]
+          if missing:
+              sys.exit("GitHub-Secrets fehlen: " + ", ".join(missing))
+          print(json.dumps({n: have[n] for n in wanted}))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: out
+          retention-days: 3
+          if-no-files-found: error

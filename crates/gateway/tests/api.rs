@@ -25,6 +25,7 @@ fn harness() -> Harness {
         apps_domain: "apps.example.test".into(),
         apps_dir: dir.path().join("apps"),
         token_ttl_secs: 600,
+        werk_domain: None,
     };
     let integrations = traum_haft_gateway::integrations::Integrations::new(
         Default::default(),
@@ -326,4 +327,79 @@ fn key_is_persisted_and_private() {
 fn base64_url(s: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
+}
+
+/// Developer apps (werk) live on their own domain; each kind of app only
+/// answers on its own host, and the werk marker is what decides.
+#[tokio::test]
+async fn werk_apps_only_on_the_werk_domain() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("apps/foo")).unwrap();
+    std::fs::create_dir_all(dir.path().join("apps/tool")).unwrap();
+    std::fs::write(dir.path().join("apps/tool/werk.json"), "{}").unwrap();
+    // A user app shipping a marker inside its release changes nothing.
+    std::fs::create_dir_all(dir.path().join("apps/foo/current")).unwrap();
+    std::fs::write(dir.path().join("apps/foo/current/werk.json"), "{}").unwrap();
+    let key = SigningKey::load_or_create(&dir.path().join("key.pem")).unwrap();
+    let h = Harness {
+        state: Arc::new(AppState {
+            config: Config {
+                issuer: ISSUER.into(),
+                apps_domain: "apps.example.test".into(),
+                apps_dir: dir.path().join("apps"),
+                token_ttl_secs: 600,
+                werk_domain: Some("werk.example.test".into()),
+            },
+            key,
+            integrations: traum_haft_gateway::integrations::Integrations::new(
+                Default::default(),
+                Arc::new(traum_haft_gateway::store::MemoryStore::default()),
+                reqwest::Client::new(),
+                "https://connect.apps.example.test".into(),
+            ),
+            feedback: Default::default(),
+        }),
+        _dir: dir,
+    };
+    let ask = |d: &str| {
+        Request::get(format!("/_internal/tls-ask?domain={d}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    for (d, ok) in [
+        ("werk.example.test", true),
+        ("tool.werk.example.test", true),
+        ("foo.werk.example.test", false),
+        ("tool.apps.example.test", false),
+        ("foo.apps.example.test", true),
+        ("nope.werk.example.test", false),
+    ] {
+        let s = call(&h, ask(d)).await.0;
+        assert_eq!(s == StatusCode::OK, ok, "{d}: {s}");
+    }
+    let token = |app: &str, host: &str| {
+        as_visitor("/_auth/token", app, "alice")
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        call(&h, token("tool", "tool.werk.example.test")).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&h, token("foo", "foo.apps.example.test:443")).await.0,
+        StatusCode::OK
+    );
+    for (app, host) in [
+        ("tool", "tool.apps.example.test"),
+        ("foo", "foo.werk.example.test"),
+        ("foo", "tool.werk.example.test"),
+    ] {
+        assert_eq!(
+            call(&h, token(app, host)).await.0,
+            StatusCode::UNAUTHORIZED,
+            "{app} via {host}"
+        );
+    }
 }

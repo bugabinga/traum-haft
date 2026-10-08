@@ -7,6 +7,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo .cargo
 COPY crates crates
+COPY docs docs
 RUN cargo build --release --locked -p traum-haft-mcp
 
 FROM docker.io/library/debian:trixie-slim

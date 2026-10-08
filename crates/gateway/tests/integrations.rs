@@ -290,6 +290,7 @@ scopes.read = {{ label = "lesen", operations = ["query", "retrieve", "describe"]
         apps_domain: "apps.example.test".into(),
         apps_dir: dir.path().join("apps"),
         token_ttl_secs: 600,
+        werk_domain: None,
     };
     let key = SigningKey::load_or_create(&dir.path().join("key.pem")).unwrap();
     let integrations = Integrations::new(

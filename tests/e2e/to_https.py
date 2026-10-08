@@ -14,6 +14,7 @@ s = s.replace("ask http://gateway:8080/_internal/tls-ask", "ask http://127.0.0.2
 for name, addr in {
     "gateway:8080": "127.0.0.2:8080",
     "oauth2-proxy-connect:4180": "127.0.0.6:4180",
+    "oauth2-proxy-werk:4180": "127.0.0.7:4180",
     "oauth2-proxy:4180": "127.0.0.3:4180",
     "platform-mcp:8080": "127.0.0.5:8080",
 }.items():

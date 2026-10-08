@@ -22,6 +22,12 @@ pub enum GitHubError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledRepo {
+    pub name: String,
+    pub pushed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Issue {
     pub number: u64,
     pub url: String,
@@ -417,8 +423,9 @@ impl GitHubApp {
         Ok(res.text().await.unwrap_or_default())
     }
 
-    /// Names of all repositories the App is installed on (not archived).
-    pub async fn installed_repos(&self) -> Result<Vec<String>, GitHubError> {
+    /// Repositories the App is installed on (not archived), with the time
+    /// of their last push.
+    pub async fn installed_repos(&self) -> Result<Vec<InstalledRepo>, GitHubError> {
         let token = self.token(None).await?;
         let mut out = Vec::new();
         for page in 1..=20 {
@@ -433,13 +440,47 @@ impl GitHubApp {
                 repos
                     .iter()
                     .filter(|r| r["archived"] != true)
-                    .filter_map(|r| r["name"].as_str().map(String::from)),
+                    .filter_map(|r| {
+                        Some(InstalledRepo {
+                            name: r["name"].as_str()?.to_string(),
+                            pushed_at: r["pushed_at"].as_str().unwrap_or_default().to_string(),
+                        })
+                    }),
             );
             if repos.len() < 100 {
                 break;
             }
         }
         Ok(out)
+    }
+
+    /// Sets a commit status (the check shown next to a commit).
+    pub async fn set_status(
+        &self,
+        repo: &str,
+        sha: &str,
+        state: &str,
+        description: &str,
+        target_url: Option<&str>,
+    ) -> Result<(), GitHubError> {
+        let token = self.token(Some(repo)).await?;
+        // GitHub cuts descriptions at 140 characters.
+        let description: String = description.chars().take(140).collect();
+        Self::send(
+            self.req(
+                reqwest::Method::POST,
+                &format!("/repos/{}/{repo}/statuses/{sha}", self.org),
+                &token,
+            )
+            .json(&json!({
+                "state": state,
+                "context": "traum-haft",
+                "description": description,
+                "target_url": target_url,
+            })),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Commit sha a branch points to.
