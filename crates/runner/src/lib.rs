@@ -240,7 +240,13 @@ impl Runner {
                 continue;
             };
             if let Err(e) = self.podman(&["start", &container]).await {
-                tracing::warn!(%app, error = %e, "could not restart container");
+                // A rebuilt worker has no containers, but the release (image
+                // tarball, secrets) is still on the data volume.
+                let v = s.live.unwrap_or_default();
+                tracing::warn!(%app, error = %e, version = v, "container gone; starting the release again");
+                if let Err(e) = self.activate(&app, v, release).await {
+                    tracing::warn!(%app, error = %e, "could not start the live release");
+                }
                 continue;
             }
             if let Ok(port) = self.host_port(&container, release.port).await

@@ -97,6 +97,14 @@ start_runner
 sleep 1
 check "after runner restart: container back, routed" '[ "$(app | field version)" = 2 ]'
 
+# A rebuilt worker: no containers, no images; the volume still holds the releases.
+kill "${pids[-1]}"; wait "${pids[-1]}" 2>/dev/null || true
+podman rm -f werk-demo-v2 >/dev/null; podman rmi -f localhost/werk/demo:v2 >/dev/null
+start_runner
+for _ in $(seq 40); do [ "$(app | field version 2>/dev/null)" = 2 ] && break; sleep 0.5; done
+check "rebuilt worker: live release started again from the volume" '[ "$(app | field version)" = 2 ]'
+check "rebuilt worker: /data still there" '[ "$(app | field counter)" -ge 4 ]'
+
 c "${auth[@]}" -X POST "$API/apps/demo/stop" >/dev/null
 check "stop: offline" '[ "$(c -o /dev/null -w "%{http_code}" -H "Host: demo.werk.example.test" -H "X-Traum-Haft-Edge: $EDGE" "$PROXY/")" = 404 ]'
 check "stop: /data kept" 'podman volume exists werk-demo-data'
