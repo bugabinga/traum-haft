@@ -2,6 +2,8 @@
 # The runner against real podman and a real Caddy: deploy, health gate,
 # switch, secrets, /data, edge secret, logs, restart, stop.
 # Needs: podman, age, caddy (CADDY), cargo. Pulls one small base image.
+# RUNNER_PODMAN: podman command the runner uses (e.g. a podman --remote
+# wrapper, as on the worker where it talks to another user's podman).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/../.." && pwd)"
 caddy="${CADDY:-caddy}"
@@ -10,6 +12,7 @@ cleanup() {
   kill "${pids[@]}" 2>/dev/null || true
   podman ps -a --filter label=traum-haft.app=demo -q | xargs -r podman rm -f >/dev/null 2>&1 || true
   podman network rm -f werk-demo >/dev/null 2>&1 || true
+  podman volume rm -f werk-demo-data >/dev/null 2>&1 || true
   podman images --format '{{.Repository}}:{{.Tag}}' | grep -E '^localhost/(werk|test)/demo:' | xargs -r podman rmi -f >/dev/null 2>&1 || true
   rm -rf "$work"
 }
@@ -36,7 +39,7 @@ echo '{"admin":{"listen":"127.0.0.13:2019","origins":["127.0.0.13:2019"]}}' > "$
 start_runner() {
   RUNNER_TOKEN=$TOKEN RUNNER_EDGE_SECRET=$EDGE RUNNER_DATA_DIR="$work/data" RUNNER_DOMAIN=werk.example.test \
   RUNNER_CADDY_ADMIN=http://127.0.0.13:2019 RUNNER_PROXY_LISTEN=127.0.0.13:8080 RUNNER_LISTEN=127.0.0.13:9000 \
-  RUNNER_HEALTH_TIMEOUT_SECS=15 RUST_LOG=info "$root/target/debug/traum-haft-runner" >> "$work/runner.log" 2>&1 & pids+=($!)
+  RUNNER_HEALTH_TIMEOUT_SECS=15 RUNNER_PODMAN="${RUNNER_PODMAN:-podman}" RUST_LOG=info "$root/target/debug/traum-haft-runner" >> "$work/runner.log" 2>&1 & pids+=($!)
   for _ in $(seq 60); do c -o /dev/null "$API/apps" && return; sleep 0.5; done; echo "runner did not start"; cat "$work/runner.log"; exit 1
 }
 start_runner
@@ -96,7 +99,7 @@ check "after runner restart: container back, routed" '[ "$(app | field version)"
 
 c "${auth[@]}" -X POST "$API/apps/demo/stop" >/dev/null
 check "stop: offline" '[ "$(c -o /dev/null -w "%{http_code}" -H "Host: demo.werk.example.test" -H "X-Traum-Haft-Edge: $EDGE" "$PROXY/")" = 404 ]'
-check "stop: /data kept" '[ -f "$work/data/volumes/demo/counter" ]'
+check "stop: /data kept" 'podman volume exists werk-demo-data'
 check "identity file private" '[ "$(stat -c %a "$work/data/identity.txt")" = 600 ]'
 
 echo "== runner: $pass passed, $fail failed"

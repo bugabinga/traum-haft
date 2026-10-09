@@ -323,10 +323,9 @@ impl Runner {
         if self.podman(&["network", "exists", &network]).await.is_err() {
             self.podman(&["network", "create", &network]).await?;
         }
-        let data = self.cfg.data_dir.join("volumes").join(app);
-        tokio::fs::create_dir_all(&data)
-            .await
-            .map_err(|e| e.to_string())?;
+        // A podman volume, owned by whoever runs the containers (on the
+        // worker another user than the runner); survives every deploy.
+        let volume = format!("werk-{app}-data");
         let name = format!("werk-{app}-v{v}");
         let _ = self.podman(&["rm", "-f", &name]).await;
         let url = format!("https://{app}.{}", self.cfg.domain);
@@ -357,7 +356,7 @@ impl Runner {
             "--restart",
             "unless-stopped",
             "--volume",
-            &format!("{}:/data:Z", data.display()),
+            &format!("{volume}:/data"),
             "--env",
             &format!("PORT={port}"),
             "--env",

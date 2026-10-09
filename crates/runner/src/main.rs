@@ -42,7 +42,12 @@ async fn main() -> Result<(), String> {
         .parse()
         .map_err(|e| format!("RUNNER_LISTEN: {e}"))?;
     let runner = Runner::new(cfg).await?;
-    runner.restore().await;
+    // Containers and routes come back in the background; the API (and
+    // SIGTERM handling) must not wait for the worker's Caddy.
+    tokio::spawn({
+        let runner = runner.clone();
+        async move { runner.restore().await }
+    });
     tracing::info!(%listen, "runner starting");
     let listener = tokio::net::TcpListener::bind(listen)
         .await
